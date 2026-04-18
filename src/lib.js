@@ -58,9 +58,9 @@ export async function listTournaments() {
 // ============================================
 // Default data-shape factory (backward-compat)
 // ============================================
-export const defaultConfig = () => ({ tiebreakMode: "marketValue", useSeeding: false, deadlineRequired: false });
+export const defaultConfig = () => ({ tiebreakMode: "marketValue", useSeeding: false, deadlineRequired: false, startMatchday: 10, endMatchday: 34 });
 export const normalize = (d) => ({
-  players: (d?.players || []).map((p) => ({ marketValue: 0, avatar: "", isTitleHolder: false, seed: 0, ...p })),
+  players: (d?.players || []).map((p) => ({ marketValue: 0, avatar: "", isTitleHolder: false, seed: 0, kickbaseLeagueId: "", kickbaseUserId: "", ...p })),
   rounds: (d?.rounds || []).map((r) => ({
     ...r,
     pairings: (r.pairings || []).map((m) => ({
@@ -73,7 +73,33 @@ export const normalize = (d) => ({
   config: { ...defaultConfig(), ...(d?.config || {}) },
   archive: d?.archive || [],
   titleHolder: d?.titleHolder ?? null,
+  schedule: d?.schedule || [],
 });
+
+// ============================================
+// Spielplan-Generator
+// ============================================
+// Verteilt die Runden auf Bundesliga-Spieltage:
+// - Final liegt immer auf endMd
+// - Restliche Runden bekommen zufällige Spieltage aus [startMd, endMd-1]
+// - Sortiert aufsteigend, damit Runde 1 = frühester Spieltag
+export function generateSchedule(playerCount, startMd, endMd) {
+  if (playerCount < 2) return [];
+  const totalRounds = Math.ceil(Math.log2(playerCount));
+  if (totalRounds === 0) return [];
+  const s = Math.max(1, Math.min(startMd, endMd));
+  const e = Math.max(s, endMd);
+  const otherNeeded = totalRounds - 1;
+  const pool = [];
+  for (let md = s; md < e; md++) pool.push(md);
+  if (pool.length < otherNeeded) {
+    return { error: `Nicht genug Spieltage im Bereich ${s}–${e - 1}: brauche ${otherNeeded}, habe ${pool.length}. Range erweitern.` };
+  }
+  const picks = shuffle(pool).slice(0, otherNeeded).sort((a, b) => a - b);
+  const schedule = picks.map((md, i) => ({ roundNumber: i + 1, matchday: md, isFinal: false }));
+  schedule.push({ roundNumber: totalRounds, matchday: e, isFinal: true });
+  return schedule;
+}
 
 // ============================================
 // Tiebreaker resolution
@@ -172,6 +198,20 @@ export function computeStats(data) {
   }
   const avg = players.map((p) => ({ player: p, avg: counts[p.id] ? (totals[p.id] / counts[p.id]) : null })).filter((x) => x.avg != null).sort((a, b) => b.avg - a.avg);
   return { topRoundScore, biggestWin, avg, matchCount };
+}
+
+// ============================================
+// Kickbase-API (via Netlify function /api/kickbase)
+// ============================================
+export async function kbFetch(action, params, adminHash) {
+  const qs = new URLSearchParams({ action, ...(params || {}) }).toString();
+  const r = await fetch(`/api/kickbase?${qs}`, {
+    headers: { "x-admin-hash": adminHash || "" },
+  });
+  const txt = await r.text();
+  let j; try { j = JSON.parse(txt); } catch { j = { error: `Unparseable (${r.status}): ${txt.slice(0, 200)}` }; }
+  if (!r.ok) return { __error: true, status: r.status, ...j };
+  return j;
 }
 
 // ============================================

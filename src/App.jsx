@@ -5,8 +5,8 @@ import {
   rpcHasPassword, rpcVerifyPassword, rpcSetPassword, rpcChangePassword, rpcSetParticipantPassword,
   rpcSave, rpcCreate, rpcDelete,
   loadTournament, listTournaments,
-  normalize, resolveTiebreak, seededPairings, randomPairings,
-  computeStats, postDiscord,
+  normalize, resolveTiebreak, seededPairings, randomPairings, generateSchedule,
+  computeStats, postDiscord, kbFetch,
   requestNotificationPermission, notify,
   formatDeadline, timeUntil,
   getSession, setSession, clearSession,
@@ -131,6 +131,13 @@ function Tournament({ session, onLogout }) {
   const [commentInp, setCommentInp] = useState({});
   const [newCupName, setNewCupName] = useState("");
   const [coinFlip, setCoinFlip] = useState(null);
+  // Kickbase state
+  const [kbStatus, setKbStatus] = useState({ checked: false, ok: false, message: "" });
+  const [kbLeagues, setKbLeagues] = useState([]); // [{id,name}]
+  const [kbMembers, setKbMembers] = useState({}); // {leagueId: [{id,name}]}
+  const [kbBusy, setKbBusy] = useState(false);
+  const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
+  const [lineupModal, setLineupModal] = useState(null); // { pairing, round, loading, p1Lineup, p2Lineup, error }
   const skip = useRef(false);
 
   const isAdmin = session.role === "admin";
@@ -238,7 +245,9 @@ function Tournament({ session, onLogout }) {
   // ── Start / Draw (admin only)
   const startT = () => {
     if (!isAdmin || data.players.length < 2) return;
-    save({ ...data, status: "running", currentRound: 0, rounds: [], cupName: cupNm || "Kickbase Pokal" });
+    const sched = generateSchedule(data.players.length, data.config.startMatchday, data.config.endMatchday);
+    if (sched && sched.error) { alert(sched.error); return; }
+    save({ ...data, status: "running", currentRound: 0, rounds: [], cupName: cupNm || "Kickbase Pokal", schedule: sched || [] });
     setView("draw");
   };
 
@@ -246,10 +255,11 @@ function Tournament({ session, onLogout }) {
     if (!isAdmin) return;
     const { pairings, bye } = data.config.useSeeding ? seededPairings(act) : randomPairings(act);
     const rn = data.currentRound + 1;
+    const scheduled = (data.schedule || []).find((x) => x.roundNumber === rn);
     const round = {
       roundNumber: rn,
       name: getRoundName(act.length, rn),
-      matchday: "",
+      matchday: scheduled ? `Spieltag ${scheduled.matchday}` : "",
       deadline: null,
       pairings,
       bye,
@@ -451,6 +461,87 @@ function Tournament({ session, onLogout }) {
   // ── Identity
   const saveIdentity = () => { setIdentity(identityInput.trim()); setIdent(identityInput.trim()); };
 
+  // ── Kickbase
+  const kbTest = async () => {
+    setKbBusy(true); setKbStatus({ checked: false, ok: false, message: "" });
+    const r = await kbFetch("test", null, session.hash);
+    if (r.__error) setKbStatus({ checked: true, ok: false, message: r.error || `Fehler ${r.status}` });
+    else {
+      setKbStatus({ checked: true, ok: true, message: r.message || "OK" });
+      const lg = await kbFetch("leagues", null, session.hash);
+      if (!lg.__error) setKbLeagues(lg.leagues || []);
+    }
+    setKbBusy(false);
+  };
+  const kbLoadMembers = async (lid) => {
+    if (!lid || kbMembers[lid]) return;
+    const r = await kbFetch("members", { lid }, session.hash);
+    if (!r.__error) setKbMembers((m) => ({ ...m, [lid]: r.members || [] }));
+  };
+  useEffect(() => {
+    const lids = new Set(data.players.map((p) => p.kickbaseLeagueId).filter(Boolean));
+    lids.forEach((lid) => kbLoadMembers(lid));
+    // eslint-disable-next-line
+  }, [data.players.length, kbStatus.ok]);
+
+  const kbFetchPoints = async () => {
+    if (!cr) return;
+    const md = cr.matchday && cr.matchday.match(/\d+/)?.[0];
+    if (!md) { alert('Spieltag-Feld ausfüllen (z.B. "15").'); return; }
+    setKbBusy(true);
+    const needed = new Set(cr.pairings.flatMap((p) => {
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
+      return [p1?.kickbaseLeagueId, p2?.kickbaseLeagueId].filter(Boolean);
+    }));
+    if (needed.size === 0) { setKbBusy(false); alert("Keine Teilnehmer mit Kickbase-Zuordnung. Im Players-Tab verknüpfen."); return; }
+    const pointsByLid = {};
+    for (const lid of needed) {
+      const r = await kbFetch("points", { lid, md }, session.hash);
+      if (r.__error) { setKbBusy(false); alert(`Punkte-Fetch Liga ${lid} fehlgeschlagen: ${r.error}`); return; }
+      pointsByLid[lid] = Object.fromEntries((r.points || []).map((x) => [x.id, x.points]));
+    }
+    const results = cr.pairings.map((p) => {
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
+      const s1 = (p1?.kickbaseLeagueId && p1?.kickbaseUserId) ? pointsByLid[p1.kickbaseLeagueId]?.[p1.kickbaseUserId] ?? null : null;
+      const s2 = (p2?.kickbaseLeagueId && p2?.kickbaseUserId) ? pointsByLid[p2.kickbaseLeagueId]?.[p2.kickbaseUserId] ?? null : null;
+      const missing = [!p1?.kickbaseUserId && p1?.name, !p2?.kickbaseUserId && p2?.name].filter(Boolean);
+      return { pairingId: p.id, p1Name: p1?.name, p2Name: p2?.name, s1, s2, missing };
+    });
+    setKbFetchModal({ results, md });
+    setKbBusy(false);
+  };
+
+  const applyKbPoints = () => {
+    if (!kbFetchModal) return;
+    const rounds = [...data.rounds];
+    const ri = rounds.findIndex((r) => r.roundNumber === data.currentRound);
+    if (ri < 0) return;
+    const prs = rounds[ri].pairings.map((p) => {
+      const r = kbFetchModal.results.find((x) => x.pairingId === p.id);
+      if (!r) return p;
+      const patch = {};
+      if (r.s1 != null) patch.score1 = r.s1;
+      if (r.s2 != null) patch.score2 = r.s2;
+      return { ...p, ...patch };
+    });
+    rounds[ri] = { ...rounds[ri], pairings: prs };
+    save({ ...data, rounds });
+    setKbFetchModal(null);
+  };
+
+  const openLineup = async (pairing, round) => {
+    const md = round.matchday && round.matchday.match(/\d+/)?.[0];
+    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id);
+    setLineupModal({ pairing, round, loading: true, p1Lineup: null, p2Lineup: null, error: null, md, p1, p2 });
+    if (!md) { setLineupModal((m) => ({ ...m, loading: false, error: "Kein Spieltag in der Runde gesetzt." })); return; }
+    if (LOCAL_MODE) { setLineupModal((m) => ({ ...m, loading: false, error: "Lokaler Modus — Kickbase-Fetch nicht verfügbar." })); return; }
+    const [l1, l2] = await Promise.all([
+      p1?.kickbaseLeagueId && p1?.kickbaseUserId ? kbFetch("lineup", { lid: p1.kickbaseLeagueId, uid: p1.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
+      p2?.kickbaseLeagueId && p2?.kickbaseUserId ? kbFetch("lineup", { lid: p2.kickbaseLeagueId, uid: p2.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
+    ]);
+    setLineupModal((m) => ({ ...m, loading: false, p1Lineup: l1, p2Lineup: l2 }));
+  };
+
   // ── Notifications
   const enableNotifs = async () => {
     const r = await requestNotificationPermission();
@@ -563,7 +654,8 @@ function Tournament({ session, onLogout }) {
           <div style={s.fade}>
             <div style={{ ...s.card, padding: 12 }} className="card">
               <h2 style={{ ...s.cT, marginBottom: 6 }}>Turnierbaum</h2>
-              <Bracket data={data} gp={gp} />
+              <p style={{ ...s.hint, textAlign: "left", marginBottom: 6 }}>Tipp: Klick auf ein abgeschlossenes Match zeigt beide Aufstellungen mit Einzelpunkten.</p>
+              <Bracket data={data} gp={gp} onMatchClick={LOCAL_MODE ? null : openLineup} />
             </div>
           </div>
         )}
@@ -585,6 +677,21 @@ function Tournament({ session, onLogout }) {
                 <input type="checkbox" checked={data.config.useSeeding} onChange={(e) => save({ ...data, config: { ...data.config, useSeeding: e.target.checked } })} />
                 Setzliste verwenden (starke Spieler treffen später aufeinander)
               </label></div>
+              <div style={s.ar}>
+                <div style={{ flex: 1 }}>
+                  <label style={s.lb}>Spieltag von</label>
+                  <input type="number" min="1" max="34" style={s.inp} value={data.config.startMatchday} onChange={(e) => save({ ...data, config: { ...data.config, startMatchday: parseInt(e.target.value) || 1 } })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={s.lb}>Spieltag bis (Finale)</label>
+                  <input type="number" min="1" max="34" style={s.inp} value={data.config.endMatchday} onChange={(e) => save({ ...data, config: { ...data.config, endMatchday: parseInt(e.target.value) || 34 } })} />
+                </div>
+              </div>
+              {data.players.length >= 2 && (() => {
+                const preview = generateSchedule(data.players.length, data.config.startMatchday, data.config.endMatchday);
+                if (preview && preview.error) return <p style={{ ...s.hint, color: "#ef4444" }}>⚠️ {preview.error}</p>;
+                return <p style={s.hint}>📅 {preview?.length || 0} Runden auf {data.config.endMatchday - data.config.startMatchday + 1} Spieltage — Finale an Spieltag {data.config.endMatchday}</p>;
+              })()}
               <div style={s.sr}>
                 <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Teilnehmer</span></div>
                 <div style={s.st}><span style={s.sn}>{data.players.length < 2 ? "–" : Math.ceil(Math.log2(data.players.length))}</span><span style={s.sl}>Runden</span></div>
@@ -608,16 +715,37 @@ function Tournament({ session, onLogout }) {
             </div>
           )}
           {data.status === "running" && (
-            <div style={s.card} className="card">
-              <h2 style={s.cT}>Status</h2>
-              <div style={s.sr}>
-                <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Gesamt</span></div>
-                <div style={s.st}><span style={s.sn}>{act.length}</span><span style={s.sl}>Dabei</span></div>
-                <div style={s.st}><span style={s.sn}>{data.currentRound}</span><span style={s.sl}>Runde</span></div>
+            <>
+              <div style={s.card} className="card">
+                <h2 style={s.cT}>Status</h2>
+                <div style={s.sr}>
+                  <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Gesamt</span></div>
+                  <div style={s.st}><span style={s.sn}>{act.length}</span><span style={s.sl}>Dabei</span></div>
+                  <div style={s.st}><span style={s.sn}>{data.currentRound}</span><span style={s.sl}>Runde</span></div>
+                </div>
+                <h3 style={{ ...s.cS, marginTop: 14 }}>Noch dabei</h3>
+                <div style={s.cps}>{act.map((p) => <span key={p.id} style={s.cp}><Av p={p} size={16} />{p.name}{p.isTitleHolder && <span style={s.tdB}>TV</span>}{p.league && <span style={s.cpL}>{p.league}</span>}</span>)}</div>
               </div>
-              <h3 style={{ ...s.cS, marginTop: 14 }}>Noch dabei</h3>
-              <div style={s.cps}>{act.map((p) => <span key={p.id} style={s.cp}><Av p={p} size={16} />{p.name}{p.isTitleHolder && <span style={s.tdB}>TV</span>}{p.league && <span style={s.cpL}>{p.league}</span>}</span>)}</div>
-            </div>
+              {(data.schedule || []).length > 0 && (
+                <div style={{ ...s.card, marginTop: 12 }} className="card">
+                  <h3 style={s.cS}>📅 Spielplan</h3>
+                  {data.schedule.map((se) => {
+                    const totalRounds = data.schedule.length;
+                    const roundName = getRoundName(Math.pow(2, totalRounds - se.roundNumber + 1), se.roundNumber);
+                    const done = data.rounds.find((r) => r.roundNumber === se.roundNumber)?.status === "completed";
+                    const current = se.roundNumber === data.currentRound;
+                    return (
+                      <div key={se.roundNumber} style={{ ...s.pR, opacity: done ? 0.5 : 1 }}>
+                        <span style={{ ...s.pN, color: current ? "#00e676" : "#475569" }}>{done ? "✓" : current ? "●" : "○"}</span>
+                        <span style={{ ...s.pNm, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 1, color: current ? "#00e676" : "#cbd5e1" }}>{roundName}</span>
+                        {se.isFinal && <span style={{ ...s.tdB, background: "linear-gradient(135deg,#fbbf24,#f59e0b)" }}>🏆 Finale</span>}
+                        <span style={{ ...s.lB, background: current ? "#0a2e1a" : "#162032", color: current ? "#00e676" : "#94a3b8", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 1, fontSize: 13 }}>Spieltag {se.matchday}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
           {data.status === "finished" && (
             <div style={s.card} className="card">
@@ -651,8 +779,9 @@ function Tournament({ session, onLogout }) {
           </div>
           {data.players.length > 0 && <div style={{ ...s.card, marginTop: 12 }} className="card">
             <h3 style={s.cS}>{data.players.length} Teilnehmer</h3>
+            {kbLeagues.length > 0 && <p style={{ ...s.info, marginBottom: 8 }}>⚡ Kickbase-Mapping: Liga wählen → User aus Dropdown (wird nach Liga-Wahl geladen)</p>}
             {data.players.map((p, i) => (
-              <div key={p.id} style={s.pR}>
+              <div key={p.id} style={{ ...s.pR, flexWrap: "wrap" }}>
                 <span style={s.pN}>{i + 1}</span>
                 <Av p={p} size={22} />
                 <span style={s.pNm}>
@@ -664,6 +793,18 @@ function Tournament({ session, onLogout }) {
                 {p.seed > 0 && <span style={{ ...s.lB, background: "#2a1a3a", color: "#c084fc" }}>#{p.seed}</span>}
                 <button style={s.bRm} title="Titelverteidiger" onClick={() => setTitleHolder(p.id)}>🏆</button>
                 <button style={s.bRm} onClick={() => remP(p.id)}>✕</button>
+                {kbLeagues.length > 0 && (
+                  <div style={{ flexBasis: "100%", display: "flex", gap: 6, marginTop: 6 }}>
+                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseLeagueId || ""} onChange={(e) => { updatePlayer(p.id, { kickbaseLeagueId: e.target.value, kickbaseUserId: "" }); kbLoadMembers(e.target.value); }}>
+                      <option value="">— Kickbase-Liga —</option>
+                      {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseUserId || ""} disabled={!p.kickbaseLeagueId} onChange={(e) => updatePlayer(p.id, { kickbaseUserId: e.target.value })}>
+                      <option value="">— User —</option>
+                      {(kbMembers[p.kickbaseLeagueId] || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </div>
+                )}
               </div>
             ))}
           </div>}
@@ -674,6 +815,10 @@ function Tournament({ session, onLogout }) {
           <div style={s.card} className="card">
             <h2 style={s.cT}>🎲 Auslosung — {getRoundName(act.length, data.currentRound + 1)}</h2>
             <p style={s.dI}>{act.length} → {Math.floor(act.length / 2)} Duelle{act.length % 2 === 1 && " + 1 Freilos"}</p>
+            {(() => {
+              const sched = (data.schedule || []).find((x) => x.roundNumber === data.currentRound + 1);
+              return sched ? <p style={{ ...s.hint, color: "#fbbf24", fontSize: 13 }}>📅 Diese Runde ist für <b>Spieltag {sched.matchday}</b>{sched.isFinal ? " (Finale)" : ""} vorgesehen</p> : null;
+            })()}
             {data.config.useSeeding && <p style={{ ...s.hint, color: "#00e676" }}>📊 Setzliste aktiv</p>}
             {cr?.status === "active" ? <p style={s.hint}>Runde läuft noch — erst Punkte eintragen & abschließen.</p>
               : animDraw ? <div>
@@ -707,6 +852,11 @@ function Tournament({ session, onLogout }) {
               postDiscord("deadline", { cupName: data.cupName, roundName: cr.name, deadline: formatDeadline(cr.deadline), missing });
             }} isAdmin={isAdmin} />}
             {data.config.tiebreakMode === "twoLeg" && <p style={{ ...s.hint, color: "#a855f7" }}>Modus: Hin- & Rückrunde</p>}
+            {isAdmin && !LOCAL_MODE && cr.status === "active" && (
+              <button className="btn" style={{ ...s.bS, marginTop: 8, width: "100%" }} disabled={kbBusy} onClick={kbFetchPoints}>
+                {kbBusy ? "Lade..." : "⚡ Punkte aus Kickbase laden"}
+              </button>
+            )}
           </div>
           {cr.pairings.map((p) => {
             const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
@@ -914,6 +1064,22 @@ function Tournament({ session, onLogout }) {
               : <button className="btn" style={{ ...s.bS, marginTop: 8 }} onClick={enableNotifs}>Aktivieren</button>}
           </div>
 
+          {isAdmin && !LOCAL_MODE && <div style={{ ...s.card, marginTop: 12 }} className="card">
+            <h3 style={s.cS}>⚡ Kickbase-Anbindung</h3>
+            <p style={s.info}>Punkte können pro Spieltag direkt aus Kickbase geladen werden. Voraussetzung: Netlify-Env-Vars <code>KICKBASE_EMAIL</code>, <code>KICKBASE_PASSWORD</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_ANON_KEY</code>.</p>
+            <button className="btn" style={{ ...s.bS, marginTop: 8 }} disabled={kbBusy} onClick={kbTest}>{kbBusy ? "Prüfe..." : "🔌 Verbindung testen"}</button>
+            {kbStatus.checked && (
+              <p style={{ fontSize: 12, marginTop: 8, color: kbStatus.ok ? "#4ade80" : "#ef4444", lineHeight: 1.4 }}>
+                {kbStatus.ok ? "✓ " : "✗ "}{kbStatus.message}
+              </p>
+            )}
+            {kbStatus.ok && kbLeagues.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8" }}>
+                Gefundene Ligen: {kbLeagues.map((l) => <span key={l.id} style={{ ...s.lB, marginRight: 4 }}>{l.name}</span>)}
+              </div>
+            )}
+          </div>}
+
           {isAdmin && <div style={{ ...s.card, marginTop: 12 }} className="card">
             <h3 style={s.cS}>🏆 Mehrere Pokale</h3>
             <div style={{ marginBottom: 8 }}>
@@ -973,6 +1139,49 @@ function Tournament({ session, onLogout }) {
         </div>}
       </main>
 
+      {lineupModal && <div style={s.ov} onClick={() => setLineupModal(null)}>
+        <div style={{ ...s.mo, maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+          <h3 style={s.moT}>⚔️ {lineupModal.p1?.name} vs {lineupModal.p2?.name}</h3>
+          <p style={s.moTx}>{lineupModal.round.name}{lineupModal.md && ` · Spieltag ${lineupModal.md}`}</p>
+          {lineupModal.loading && <p style={s.info}>Lade Aufstellungen...</p>}
+          {lineupModal.error && <p style={{ ...s.info, color: "#ef4444" }}>{lineupModal.error}</p>}
+          {!lineupModal.loading && !lineupModal.error && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <LineupColumn p={lineupModal.p1} r={lineupModal.p1Lineup} headScore={lineupModal.pairing.score1} />
+              <LineupColumn p={lineupModal.p2} r={lineupModal.p2Lineup} headScore={lineupModal.pairing.score2} />
+            </div>
+          )}
+          <div style={{ ...s.moA, marginTop: 12 }}>
+            <button className="btn" style={s.bS} onClick={() => setLineupModal(null)}>Schließen</button>
+          </div>
+        </div>
+      </div>}
+
+      {kbFetchModal && <div style={s.ov} onClick={() => setKbFetchModal(null)}>
+        <div style={s.mo} onClick={(e) => e.stopPropagation()}>
+          <h3 style={s.moT}>⚡ Kickbase-Punkte Spieltag {kbFetchModal.md}</h3>
+          <p style={s.moTx}>Prüfe die Werte und übernehme sie, oder schließe den Dialog.</p>
+          <div style={{ maxHeight: "50vh", overflowY: "auto", marginBottom: 10 }}>
+            {kbFetchModal.results.map((r) => (
+              <div key={r.pairingId} style={{ ...s.hP, borderColor: r.missing.length ? "#7f1d1d" : "#1a2030" }}>
+                <span style={{ ...s.hN, color: r.s1 != null ? "#e2e8f0" : "#ef4444" }}>{r.p1Name} {r.s1 != null ? `→ ${r.s1}` : "✗"}</span>
+                <span style={s.hS}>vs</span>
+                <span style={{ ...s.hN, textAlign: "right", color: r.s2 != null ? "#e2e8f0" : "#ef4444" }}>{r.p2Name} {r.s2 != null ? `→ ${r.s2}` : "✗"}</span>
+              </div>
+            ))}
+          </div>
+          {kbFetchModal.results.some((r) => r.missing.length > 0) && (
+            <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>
+              ⚠️ Einige Teilnehmer ohne Kickbase-Mapping — diese bleiben unverändert.
+            </p>
+          )}
+          <div style={s.moA}>
+            <button className="btn" style={s.bS} onClick={() => setKbFetchModal(null)}>Abbrechen</button>
+            <button className="btn" style={s.bP} onClick={applyKbPoints}>Übernehmen</button>
+          </div>
+        </div>
+      </div>}
+
       {confirm && <div style={s.ov} onClick={() => setConfirm(null)}>
         <div style={s.mo} onClick={(e) => e.stopPropagation()}>
           <h3 style={s.moT}>{confirm === "complete" ? "Runde abschließen?" : "Zurücksetzen?"}</h3>
@@ -1017,6 +1226,34 @@ function maybeNotifyDraw(data, identity) {
   sessionStorage.setItem(key, "1");
   const opp = myMatch.player1Id === me.id ? data.players.find((p) => p.id === myMatch.player2Id) : data.players.find((p) => p.id === myMatch.player1Id);
   notify(`${data.cupName} — ${cr.name}`, `Du spielst gegen ${opp?.name || "?"}${cr.deadline ? ` — Deadline: ${formatDeadline(cr.deadline)}` : ""}`);
+}
+
+/* ═══════════════════ LINEUP COLUMN ═══════════════════ */
+function LineupColumn({ p, r, headScore }) {
+  const header = (
+    <div style={{ padding: "8px 10px", background: "#0d1520", borderRadius: 8, marginBottom: 6, textAlign: "center" }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#f1f5f9" }}>{p?.name || "?"}</div>
+      <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, color: "#00e676", letterSpacing: 1 }}>{headScore ?? "–"}</div>
+    </div>
+  );
+  if (!r) return <div>{header}<p style={s.info}>–</p></div>;
+  if (r.__error) return <div>{header}<p style={{ ...s.info, color: "#ef4444", fontSize: 11 }}>{r.error || "Fehler"}</p></div>;
+  const list = (r.lineup || []).slice().sort((a, b) => (b.points || 0) - (a.points || 0));
+  return (
+    <div>
+      {header}
+      <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
+        {list.length === 0 && <p style={{ ...s.info, fontStyle: "italic", fontSize: 11 }}>Keine Aufstellung verfügbar.</p>}
+        {list.map((pl, i) => (
+          <div key={pl.id || i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderBottom: "1px solid #1a2030", fontSize: 11 }}>
+            {pl.number != null && <span style={{ width: 20, color: "#64748b", textAlign: "right" }}>{pl.number}</span>}
+            <span style={{ flex: 1, color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pl.firstName ? `${pl.firstName[0]}. ` : ""}{pl.lastName}</span>
+            <span style={{ minWidth: 32, textAlign: "right", fontWeight: 700, color: pl.points > 0 ? "#00e676" : pl.points < 0 ? "#ef4444" : "#64748b", fontFamily: "'Bebas Neue',sans-serif" }}>{pl.points ?? 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ═══════════════════ ROOT ═══════════════════ */
