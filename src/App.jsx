@@ -135,6 +135,7 @@ function Tournament({ session, onLogout }) {
   const [kbStatus, setKbStatus] = useState({ checked: false, ok: false, message: "" });
   const [kbLeagues, setKbLeagues] = useState([]); // [{id,name}]
   const [kbMembers, setKbMembers] = useState({}); // {leagueId: [{id,name}]}
+  const [kbMembersErr, setKbMembersErr] = useState({}); // {leagueId: string}
   const [kbBusy, setKbBusy] = useState(false);
   const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
   const [lineupModal, setLineupModal] = useState(null); // { pairing, round, loading, p1Lineup, p2Lineup, error }
@@ -473,10 +474,21 @@ function Tournament({ session, onLogout }) {
     }
     setKbBusy(false);
   };
-  const kbLoadMembers = async (lid) => {
-    if (!lid || kbMembers[lid]) return;
+  const kbLoadMembers = async (lid, force = false) => {
+    if (!lid) return;
+    if (!force && kbMembers[lid]) return;
+    setKbMembersErr((e) => { const n = { ...e }; delete n[lid]; return n; });
     const r = await kbFetch("members", { lid }, session.hash);
-    if (!r.__error) setKbMembers((m) => ({ ...m, [lid]: r.members || [] }));
+    if (r.__error) {
+      console.error("kbLoadMembers error:", r);
+      setKbMembersErr((e) => ({ ...e, [lid]: r.error || `Fehler ${r.status}` }));
+      return;
+    }
+    if ((r.members || []).length === 0) {
+      console.warn("kbLoadMembers: 0 members, raw sample:", r._rawSample);
+      setKbMembersErr((e) => ({ ...e, [lid]: `0 Mitglieder — Endpoint: ${r.source || "?"}${r._rawSample ? " (Raw in Konsole)" : ""}` }));
+    }
+    setKbMembers((m) => ({ ...m, [lid]: r.members || [] }));
   };
   useEffect(() => {
     const lids = new Set(data.players.map((p) => p.kickbaseLeagueId).filter(Boolean));
@@ -794,15 +806,23 @@ function Tournament({ session, onLogout }) {
                 <button style={s.bRm} title="Titelverteidiger" onClick={() => setTitleHolder(p.id)}>🏆</button>
                 <button style={s.bRm} onClick={() => remP(p.id)}>✕</button>
                 {kbLeagues.length > 0 && (
-                  <div style={{ flexBasis: "100%", display: "flex", gap: 6, marginTop: 6 }}>
-                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseLeagueId || ""} onChange={(e) => { updatePlayer(p.id, { kickbaseLeagueId: e.target.value, kickbaseUserId: "" }); kbLoadMembers(e.target.value); }}>
-                      <option value="">— Kickbase-Liga —</option>
-                      {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-                    </select>
-                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseUserId || ""} disabled={!p.kickbaseLeagueId} onChange={(e) => updatePlayer(p.id, { kickbaseUserId: e.target.value })}>
-                      <option value="">— User —</option>
-                      {(kbMembers[p.kickbaseLeagueId] || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    </select>
+                  <div style={{ flexBasis: "100%", marginTop: 6 }}>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseLeagueId || ""} onChange={(e) => { updatePlayer(p.id, { kickbaseLeagueId: e.target.value, kickbaseUserId: "" }); kbLoadMembers(e.target.value); }}>
+                        <option value="">— Kickbase-Liga —</option>
+                        {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      </select>
+                      <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseUserId || ""} disabled={!p.kickbaseLeagueId || !(kbMembers[p.kickbaseLeagueId]?.length > 0)} onChange={(e) => updatePlayer(p.id, { kickbaseUserId: e.target.value })}>
+                        <option value="">{p.kickbaseLeagueId && !kbMembers[p.kickbaseLeagueId] ? "Lade..." : "— User —"}</option>
+                        {(kbMembers[p.kickbaseLeagueId] || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      </select>
+                      {p.kickbaseLeagueId && (
+                        <button style={{ ...s.bRm, fontSize: 14 }} title="Neu laden" onClick={() => kbLoadMembers(p.kickbaseLeagueId, true)}>↻</button>
+                      )}
+                    </div>
+                    {p.kickbaseLeagueId && kbMembersErr[p.kickbaseLeagueId] && (
+                      <p style={{ fontSize: 10, color: "#ef4444", marginTop: 4 }}>⚠️ {kbMembersErr[p.kickbaseLeagueId]}</p>
+                    )}
                   </div>
                 )}
               </div>
