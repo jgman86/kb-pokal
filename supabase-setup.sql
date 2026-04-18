@@ -64,6 +64,8 @@ AS $$
 $$;
 
 -- Gibt Rolle zurück: 'admin', 'participant' oder '' (ungültig)
+-- DROP nötig, weil der Rückgabetyp ggü. v1 (BOOLEAN) geändert wurde
+DROP FUNCTION IF EXISTS verify_password(TEXT, TEXT);
 CREATE OR REPLACE FUNCTION verify_password(
   p_tournament_id TEXT DEFAULT 'default',
   p_hash TEXT DEFAULT ''
