@@ -155,35 +155,43 @@ export default async (req) => {
     }
 
     if (action === "members") {
+      // Primär: /settings/managers (nur für Liga-Admins, liefert vollständige Manager-Liste).
+      // Fallback: /ranking — funktioniert für jedes Mitglied, enthält alle Nutzer mit i/n.
       if (!lid) return json({ error: "lid fehlt" }, 400);
-      const res = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/ranking`, token);
-      const arr = res.users || res.ranking || res.it || res || [];
+      let raw = null, source = null, tried = [];
+      try {
+        raw = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/settings/managers`, token);
+        source = "settings/managers";
+      } catch (e) {
+        tried.push(`settings/managers → ${e.message.slice(0, 120)}`);
+      }
+      if (!raw) {
+        try {
+          raw = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/ranking`, token);
+          source = "ranking";
+        } catch (e) {
+          tried.push(`ranking → ${e.message.slice(0, 120)}`);
+        }
+      }
+      if (!raw) return json({ error: "Kein Members-Endpoint erreichbar", tried }, 502);
+      // Beide liefern Mitglieder unter `us` (Kickbase-Konvention)
+      const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
       const members = arr.map((m) => ({
         id: String(m.i || m.id || m.userId || ""),
         name: m.n || m.name || m.nickname || "?",
+        image: m.uim || m.profileUrl || "",
       })).filter((m) => m.id);
-      return json({ members });
+      return json({ members, source, count: members.length, _rawSample: members.length === 0 ? JSON.stringify(raw).slice(0, 500) : undefined });
     }
 
     if (action === "lineup") {
+      // Dokumentiert: GET /v4/leagues/{lid}/users/{uid}/teamcenter?dayNumber=X
       if (!lid) return json({ error: "lid fehlt" }, 400);
       const uid = u.searchParams.get("uid");
       if (!uid) return json({ error: "uid fehlt" }, 400);
       if (!md) return json({ error: "md fehlt" }, 400);
-      const candidates = [
-        `/v4/leagues/${encodeURIComponent(lid)}/managers/${encodeURIComponent(uid)}/dashboard?matchDay=${encodeURIComponent(md)}`,
-        `/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/teamcenter?matchDay=${encodeURIComponent(md)}`,
-        `/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/lineup?matchDay=${encodeURIComponent(md)}`,
-        `/v4/leagues/${encodeURIComponent(lid)}/managers/${encodeURIComponent(uid)}?matchDay=${encodeURIComponent(md)}`,
-      ];
-      let data = null, tried = [];
-      for (const p of candidates) {
-        try { data = await kbGet(p, token); if (data) break; }
-        catch (e) { tried.push(`${p} → ${e.message.slice(0, 120)}`); }
-      }
-      if (!data) return json({ error: "Kein Lineup-Endpoint erreichbar", tried }, 502);
-      // Normalisiere unterschiedliche Schemas
-      const rawLineup = data.lineup || data.players || data.it || data.squad || [];
+      const data = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/teamcenter?dayNumber=${encodeURIComponent(md)}`, token);
+      const rawLineup = data.lineup || data.players || data.it || data.squad || data.pl || data.ap || [];
       const lineup = rawLineup.map((p) => ({
         id: String(p.i || p.id || ""),
         firstName: p.fn || p.firstName || "",
@@ -193,33 +201,23 @@ export default async (req) => {
         points: Number(p.tp ?? p.totalPoints ?? p.p ?? p.points ?? p.mdp ?? 0),
         status: p.st || p.status || null,
       }));
-      const totalPoints = Number(data.totalPoints ?? data.tp ?? data.sp ?? lineup.reduce((a, x) => a + (x.points || 0), 0));
-      return json({ lineup, totalPoints });
+      const totalPoints = Number(data.totalPoints ?? data.tp ?? data.sp ?? data.pt ?? lineup.reduce((a, x) => a + (x.points || 0), 0));
+      return json({ lineup, totalPoints, _rawSample: lineup.length === 0 ? JSON.stringify(data).slice(0, 500) : undefined });
     }
 
     if (action === "points") {
+      // Dokumentiert: GET /v4/leagues/{lid}/ranking?dayNumber=X
       if (!lid) return json({ error: "lid fehlt" }, 400);
       if (!md) return json({ error: "md fehlt" }, 400);
-      // Versuche erst v4-Matchday-Endpoint, dann Fallbacks
-      const candidates = [
-        `/v4/leagues/${encodeURIComponent(lid)}/matchday/${encodeURIComponent(md)}/ranking`,
-        `/v4/leagues/${encodeURIComponent(lid)}/ranking?matchDay=${encodeURIComponent(md)}`,
-        `/v4/leagues/${encodeURIComponent(lid)}/ranking/matchday/${encodeURIComponent(md)}`,
-      ];
-      let data = null, tried = [];
-      for (const p of candidates) {
-        try { data = await kbGet(p, token); break; }
-        catch (e) { tried.push(`${p} → ${e.message}`); }
-      }
-      if (!data) return json({ error: "Kein Matchday-Endpoint erreichbar", tried }, 502);
-
-      const arr = data.users || data.ranking || data.it || data || [];
+      const data = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/ranking?dayNumber=${encodeURIComponent(md)}`, token);
+      // Response-Shape dokumentationstechnisch nicht fixiert — mehrere Wrapper probieren
+      const arr = data.users || data.us || data.ranking || data.rk || data.it || (Array.isArray(data) ? data : []);
       const points = arr.map((m) => ({
         id: String(m.i || m.id || m.userId || ""),
         name: m.n || m.name || m.nickname || "?",
-        points: Number(m.sp ?? m.seasonPoints ?? m.mdp ?? m.matchdayPoints ?? m.points ?? m.p ?? 0),
+        points: Number(m.sp ?? m.mdp ?? m.p ?? m.points ?? m.seasonPoints ?? m.matchdayPoints ?? 0),
       })).filter((x) => x.id);
-      return json({ matchday: Number(md), points });
+      return json({ matchday: Number(md), points, _rawSample: points.length === 0 ? JSON.stringify(data).slice(0, 500) : undefined });
     }
 
     return json({ error: `Unbekannte Action: ${action}` }, 400);
