@@ -165,6 +165,38 @@ export default async (req) => {
       return json({ members });
     }
 
+    if (action === "lineup") {
+      if (!lid) return json({ error: "lid fehlt" }, 400);
+      const uid = u.searchParams.get("uid");
+      if (!uid) return json({ error: "uid fehlt" }, 400);
+      if (!md) return json({ error: "md fehlt" }, 400);
+      const candidates = [
+        `/v4/leagues/${encodeURIComponent(lid)}/managers/${encodeURIComponent(uid)}/dashboard?matchDay=${encodeURIComponent(md)}`,
+        `/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/teamcenter?matchDay=${encodeURIComponent(md)}`,
+        `/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/lineup?matchDay=${encodeURIComponent(md)}`,
+        `/v4/leagues/${encodeURIComponent(lid)}/managers/${encodeURIComponent(uid)}?matchDay=${encodeURIComponent(md)}`,
+      ];
+      let data = null, tried = [];
+      for (const p of candidates) {
+        try { data = await kbGet(p, token); if (data) break; }
+        catch (e) { tried.push(`${p} → ${e.message.slice(0, 120)}`); }
+      }
+      if (!data) return json({ error: "Kein Lineup-Endpoint erreichbar", tried }, 502);
+      // Normalisiere unterschiedliche Schemas
+      const rawLineup = data.lineup || data.players || data.it || data.squad || [];
+      const lineup = rawLineup.map((p) => ({
+        id: String(p.i || p.id || ""),
+        firstName: p.fn || p.firstName || "",
+        lastName: p.ln || p.lastName || p.n || p.name || "?",
+        number: p.nr || p.number || null,
+        position: p.pos || p.position || null,
+        points: Number(p.tp ?? p.totalPoints ?? p.p ?? p.points ?? p.mdp ?? 0),
+        status: p.st || p.status || null,
+      }));
+      const totalPoints = Number(data.totalPoints ?? data.tp ?? data.sp ?? lineup.reduce((a, x) => a + (x.points || 0), 0));
+      return json({ lineup, totalPoints });
+    }
+
     if (action === "points") {
       if (!lid) return json({ error: "lid fehlt" }, 400);
       if (!md) return json({ error: "md fehlt" }, 400);

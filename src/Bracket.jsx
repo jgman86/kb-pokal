@@ -19,7 +19,7 @@ const COL_GAP = 28;
 const SLOT_H = 70;
 const SLOT_GAP = 14;
 
-export function Bracket({ data, gp }) {
+export function Bracket({ data, gp, onMatchClick }) {
   const rounds = data.rounds || [];
   const W = data.status === "finished" ? data.players.find((p) => !p.eliminated) : null;
   const cols = W ? rounds.length + 1 : rounds.length;
@@ -154,9 +154,14 @@ export function Bracket({ data, gp }) {
               const w1 = p.winner === p.player1Id || (d && !p.winner && p.score1 > p.score2);
               const w2 = p.winner === p.player2Id || (d && !p.winner && p.score2 > p.score1);
               const t = d && !p.winner && p.score1 === p.score2;
+              const clickable = d && onMatchClick;
               return (
                 <div key={p.id} style={{ position: "absolute", left: pos.x, top: pos.y, width: COL_W, height: pos.h }}>
-                  <div style={{ ...bk.mb, borderColor: r.status === "active" ? "#00e67633" : "#1e293b" }}>
+                  <div
+                    onClick={clickable ? (e) => { e.stopPropagation(); onMatchClick(p, r); } : undefined}
+                    style={{ ...bk.mb, borderColor: r.status === "active" ? "#00e67633" : "#1e293b", cursor: clickable ? "pointer" : "default" }}
+                    title={clickable ? "Aufstellungen anzeigen" : ""}
+                  >
                     <Slot p={p1} win={w1} lose={d && !w1 && !t} tie={t} score={d ? p.score1 : null} />
                     <Slot p={p2} win={w2} lose={d && !w2 && !t} tie={t} score={d ? p.score2 : null} />
                   </div>

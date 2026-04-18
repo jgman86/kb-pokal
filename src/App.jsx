@@ -137,6 +137,7 @@ function Tournament({ session, onLogout }) {
   const [kbMembers, setKbMembers] = useState({}); // {leagueId: [{id,name}]}
   const [kbBusy, setKbBusy] = useState(false);
   const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
+  const [lineupModal, setLineupModal] = useState(null); // { pairing, round, loading, p1Lineup, p2Lineup, error }
   const skip = useRef(false);
 
   const isAdmin = session.role === "admin";
@@ -525,6 +526,19 @@ function Tournament({ session, onLogout }) {
     setKbFetchModal(null);
   };
 
+  const openLineup = async (pairing, round) => {
+    const md = round.matchday && round.matchday.match(/\d+/)?.[0];
+    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id);
+    setLineupModal({ pairing, round, loading: true, p1Lineup: null, p2Lineup: null, error: null, md, p1, p2 });
+    if (!md) { setLineupModal((m) => ({ ...m, loading: false, error: "Kein Spieltag in der Runde gesetzt." })); return; }
+    if (LOCAL_MODE) { setLineupModal((m) => ({ ...m, loading: false, error: "Lokaler Modus — Kickbase-Fetch nicht verfügbar." })); return; }
+    const [l1, l2] = await Promise.all([
+      p1?.kickbaseLeagueId && p1?.kickbaseUserId ? kbFetch("lineup", { lid: p1.kickbaseLeagueId, uid: p1.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
+      p2?.kickbaseLeagueId && p2?.kickbaseUserId ? kbFetch("lineup", { lid: p2.kickbaseLeagueId, uid: p2.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
+    ]);
+    setLineupModal((m) => ({ ...m, loading: false, p1Lineup: l1, p2Lineup: l2 }));
+  };
+
   // ── Notifications
   const enableNotifs = async () => {
     const r = await requestNotificationPermission();
@@ -637,7 +651,8 @@ function Tournament({ session, onLogout }) {
           <div style={s.fade}>
             <div style={{ ...s.card, padding: 12 }} className="card">
               <h2 style={{ ...s.cT, marginBottom: 6 }}>Turnierbaum</h2>
-              <Bracket data={data} gp={gp} />
+              <p style={{ ...s.hint, textAlign: "left", marginBottom: 6 }}>Tipp: Klick auf ein abgeschlossenes Match zeigt beide Aufstellungen mit Einzelpunkten.</p>
+              <Bracket data={data} gp={gp} onMatchClick={LOCAL_MODE ? null : openLineup} />
             </div>
           </div>
         )}
@@ -1081,6 +1096,24 @@ function Tournament({ session, onLogout }) {
         </div>}
       </main>
 
+      {lineupModal && <div style={s.ov} onClick={() => setLineupModal(null)}>
+        <div style={{ ...s.mo, maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+          <h3 style={s.moT}>⚔️ {lineupModal.p1?.name} vs {lineupModal.p2?.name}</h3>
+          <p style={s.moTx}>{lineupModal.round.name}{lineupModal.md && ` · Spieltag ${lineupModal.md}`}</p>
+          {lineupModal.loading && <p style={s.info}>Lade Aufstellungen...</p>}
+          {lineupModal.error && <p style={{ ...s.info, color: "#ef4444" }}>{lineupModal.error}</p>}
+          {!lineupModal.loading && !lineupModal.error && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <LineupColumn p={lineupModal.p1} r={lineupModal.p1Lineup} headScore={lineupModal.pairing.score1} />
+              <LineupColumn p={lineupModal.p2} r={lineupModal.p2Lineup} headScore={lineupModal.pairing.score2} />
+            </div>
+          )}
+          <div style={{ ...s.moA, marginTop: 12 }}>
+            <button className="btn" style={s.bS} onClick={() => setLineupModal(null)}>Schließen</button>
+          </div>
+        </div>
+      </div>}
+
       {kbFetchModal && <div style={s.ov} onClick={() => setKbFetchModal(null)}>
         <div style={s.mo} onClick={(e) => e.stopPropagation()}>
           <h3 style={s.moT}>⚡ Kickbase-Punkte Spieltag {kbFetchModal.md}</h3>
@@ -1150,6 +1183,34 @@ function maybeNotifyDraw(data, identity) {
   sessionStorage.setItem(key, "1");
   const opp = myMatch.player1Id === me.id ? data.players.find((p) => p.id === myMatch.player2Id) : data.players.find((p) => p.id === myMatch.player1Id);
   notify(`${data.cupName} — ${cr.name}`, `Du spielst gegen ${opp?.name || "?"}${cr.deadline ? ` — Deadline: ${formatDeadline(cr.deadline)}` : ""}`);
+}
+
+/* ═══════════════════ LINEUP COLUMN ═══════════════════ */
+function LineupColumn({ p, r, headScore }) {
+  const header = (
+    <div style={{ padding: "8px 10px", background: "#0d1520", borderRadius: 8, marginBottom: 6, textAlign: "center" }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#f1f5f9" }}>{p?.name || "?"}</div>
+      <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, color: "#00e676", letterSpacing: 1 }}>{headScore ?? "–"}</div>
+    </div>
+  );
+  if (!r) return <div>{header}<p style={s.info}>–</p></div>;
+  if (r.__error) return <div>{header}<p style={{ ...s.info, color: "#ef4444", fontSize: 11 }}>{r.error || "Fehler"}</p></div>;
+  const list = (r.lineup || []).slice().sort((a, b) => (b.points || 0) - (a.points || 0));
+  return (
+    <div>
+      {header}
+      <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
+        {list.length === 0 && <p style={{ ...s.info, fontStyle: "italic", fontSize: 11 }}>Keine Aufstellung verfügbar.</p>}
+        {list.map((pl, i) => (
+          <div key={pl.id || i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderBottom: "1px solid #1a2030", fontSize: 11 }}>
+            {pl.number != null && <span style={{ width: 20, color: "#64748b", textAlign: "right" }}>{pl.number}</span>}
+            <span style={{ flex: 1, color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pl.firstName ? `${pl.firstName[0]}. ` : ""}{pl.lastName}</span>
+            <span style={{ minWidth: 32, textAlign: "right", fontWeight: 700, color: pl.points > 0 ? "#00e676" : pl.points < 0 ? "#ef4444" : "#64748b", fontFamily: "'Bebas Neue',sans-serif" }}>{pl.points ?? 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ═══════════════════ ROOT ═══════════════════ */
