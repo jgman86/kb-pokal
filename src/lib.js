@@ -58,7 +58,7 @@ export async function listTournaments() {
 // ============================================
 // Default data-shape factory (backward-compat)
 // ============================================
-export const defaultConfig = () => ({ tiebreakMode: "marketValue", useSeeding: false, deadlineRequired: false });
+export const defaultConfig = () => ({ tiebreakMode: "marketValue", useSeeding: false, deadlineRequired: false, startMatchday: 10, endMatchday: 34 });
 export const normalize = (d) => ({
   players: (d?.players || []).map((p) => ({ marketValue: 0, avatar: "", isTitleHolder: false, seed: 0, kickbaseLeagueId: "", kickbaseUserId: "", ...p })),
   rounds: (d?.rounds || []).map((r) => ({
@@ -73,7 +73,33 @@ export const normalize = (d) => ({
   config: { ...defaultConfig(), ...(d?.config || {}) },
   archive: d?.archive || [],
   titleHolder: d?.titleHolder ?? null,
+  schedule: d?.schedule || [],
 });
+
+// ============================================
+// Spielplan-Generator
+// ============================================
+// Verteilt die Runden auf Bundesliga-Spieltage:
+// - Final liegt immer auf endMd
+// - Restliche Runden bekommen zufällige Spieltage aus [startMd, endMd-1]
+// - Sortiert aufsteigend, damit Runde 1 = frühester Spieltag
+export function generateSchedule(playerCount, startMd, endMd) {
+  if (playerCount < 2) return [];
+  const totalRounds = Math.ceil(Math.log2(playerCount));
+  if (totalRounds === 0) return [];
+  const s = Math.max(1, Math.min(startMd, endMd));
+  const e = Math.max(s, endMd);
+  const otherNeeded = totalRounds - 1;
+  const pool = [];
+  for (let md = s; md < e; md++) pool.push(md);
+  if (pool.length < otherNeeded) {
+    return { error: `Nicht genug Spieltage im Bereich ${s}–${e - 1}: brauche ${otherNeeded}, habe ${pool.length}. Range erweitern.` };
+  }
+  const picks = shuffle(pool).slice(0, otherNeeded).sort((a, b) => a - b);
+  const schedule = picks.map((md, i) => ({ roundNumber: i + 1, matchday: md, isFinal: false }));
+  schedule.push({ roundNumber: totalRounds, matchday: e, isFinal: true });
+  return schedule;
+}
 
 // ============================================
 // Tiebreaker resolution

@@ -5,7 +5,7 @@ import {
   rpcHasPassword, rpcVerifyPassword, rpcSetPassword, rpcChangePassword, rpcSetParticipantPassword,
   rpcSave, rpcCreate, rpcDelete,
   loadTournament, listTournaments,
-  normalize, resolveTiebreak, seededPairings, randomPairings,
+  normalize, resolveTiebreak, seededPairings, randomPairings, generateSchedule,
   computeStats, postDiscord, kbFetch,
   requestNotificationPermission, notify,
   formatDeadline, timeUntil,
@@ -245,7 +245,9 @@ function Tournament({ session, onLogout }) {
   // ── Start / Draw (admin only)
   const startT = () => {
     if (!isAdmin || data.players.length < 2) return;
-    save({ ...data, status: "running", currentRound: 0, rounds: [], cupName: cupNm || "Kickbase Pokal" });
+    const sched = generateSchedule(data.players.length, data.config.startMatchday, data.config.endMatchday);
+    if (sched && sched.error) { alert(sched.error); return; }
+    save({ ...data, status: "running", currentRound: 0, rounds: [], cupName: cupNm || "Kickbase Pokal", schedule: sched || [] });
     setView("draw");
   };
 
@@ -253,10 +255,11 @@ function Tournament({ session, onLogout }) {
     if (!isAdmin) return;
     const { pairings, bye } = data.config.useSeeding ? seededPairings(act) : randomPairings(act);
     const rn = data.currentRound + 1;
+    const scheduled = (data.schedule || []).find((x) => x.roundNumber === rn);
     const round = {
       roundNumber: rn,
       name: getRoundName(act.length, rn),
-      matchday: "",
+      matchday: scheduled ? `Spieltag ${scheduled.matchday}` : "",
       deadline: null,
       pairings,
       bye,
@@ -674,6 +677,21 @@ function Tournament({ session, onLogout }) {
                 <input type="checkbox" checked={data.config.useSeeding} onChange={(e) => save({ ...data, config: { ...data.config, useSeeding: e.target.checked } })} />
                 Setzliste verwenden (starke Spieler treffen später aufeinander)
               </label></div>
+              <div style={s.ar}>
+                <div style={{ flex: 1 }}>
+                  <label style={s.lb}>Spieltag von</label>
+                  <input type="number" min="1" max="34" style={s.inp} value={data.config.startMatchday} onChange={(e) => save({ ...data, config: { ...data.config, startMatchday: parseInt(e.target.value) || 1 } })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={s.lb}>Spieltag bis (Finale)</label>
+                  <input type="number" min="1" max="34" style={s.inp} value={data.config.endMatchday} onChange={(e) => save({ ...data, config: { ...data.config, endMatchday: parseInt(e.target.value) || 34 } })} />
+                </div>
+              </div>
+              {data.players.length >= 2 && (() => {
+                const preview = generateSchedule(data.players.length, data.config.startMatchday, data.config.endMatchday);
+                if (preview && preview.error) return <p style={{ ...s.hint, color: "#ef4444" }}>⚠️ {preview.error}</p>;
+                return <p style={s.hint}>📅 {preview?.length || 0} Runden auf {data.config.endMatchday - data.config.startMatchday + 1} Spieltage — Finale an Spieltag {data.config.endMatchday}</p>;
+              })()}
               <div style={s.sr}>
                 <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Teilnehmer</span></div>
                 <div style={s.st}><span style={s.sn}>{data.players.length < 2 ? "–" : Math.ceil(Math.log2(data.players.length))}</span><span style={s.sl}>Runden</span></div>
@@ -697,16 +715,37 @@ function Tournament({ session, onLogout }) {
             </div>
           )}
           {data.status === "running" && (
-            <div style={s.card} className="card">
-              <h2 style={s.cT}>Status</h2>
-              <div style={s.sr}>
-                <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Gesamt</span></div>
-                <div style={s.st}><span style={s.sn}>{act.length}</span><span style={s.sl}>Dabei</span></div>
-                <div style={s.st}><span style={s.sn}>{data.currentRound}</span><span style={s.sl}>Runde</span></div>
+            <>
+              <div style={s.card} className="card">
+                <h2 style={s.cT}>Status</h2>
+                <div style={s.sr}>
+                  <div style={s.st}><span style={s.sn}>{data.players.length}</span><span style={s.sl}>Gesamt</span></div>
+                  <div style={s.st}><span style={s.sn}>{act.length}</span><span style={s.sl}>Dabei</span></div>
+                  <div style={s.st}><span style={s.sn}>{data.currentRound}</span><span style={s.sl}>Runde</span></div>
+                </div>
+                <h3 style={{ ...s.cS, marginTop: 14 }}>Noch dabei</h3>
+                <div style={s.cps}>{act.map((p) => <span key={p.id} style={s.cp}><Av p={p} size={16} />{p.name}{p.isTitleHolder && <span style={s.tdB}>TV</span>}{p.league && <span style={s.cpL}>{p.league}</span>}</span>)}</div>
               </div>
-              <h3 style={{ ...s.cS, marginTop: 14 }}>Noch dabei</h3>
-              <div style={s.cps}>{act.map((p) => <span key={p.id} style={s.cp}><Av p={p} size={16} />{p.name}{p.isTitleHolder && <span style={s.tdB}>TV</span>}{p.league && <span style={s.cpL}>{p.league}</span>}</span>)}</div>
-            </div>
+              {(data.schedule || []).length > 0 && (
+                <div style={{ ...s.card, marginTop: 12 }} className="card">
+                  <h3 style={s.cS}>📅 Spielplan</h3>
+                  {data.schedule.map((se) => {
+                    const totalRounds = data.schedule.length;
+                    const roundName = getRoundName(Math.pow(2, totalRounds - se.roundNumber + 1), se.roundNumber);
+                    const done = data.rounds.find((r) => r.roundNumber === se.roundNumber)?.status === "completed";
+                    const current = se.roundNumber === data.currentRound;
+                    return (
+                      <div key={se.roundNumber} style={{ ...s.pR, opacity: done ? 0.5 : 1 }}>
+                        <span style={{ ...s.pN, color: current ? "#00e676" : "#475569" }}>{done ? "✓" : current ? "●" : "○"}</span>
+                        <span style={{ ...s.pNm, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 1, color: current ? "#00e676" : "#cbd5e1" }}>{roundName}</span>
+                        {se.isFinal && <span style={{ ...s.tdB, background: "linear-gradient(135deg,#fbbf24,#f59e0b)" }}>🏆 Finale</span>}
+                        <span style={{ ...s.lB, background: current ? "#0a2e1a" : "#162032", color: current ? "#00e676" : "#94a3b8", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 1, fontSize: 13 }}>Spieltag {se.matchday}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
           {data.status === "finished" && (
             <div style={s.card} className="card">
@@ -776,6 +815,10 @@ function Tournament({ session, onLogout }) {
           <div style={s.card} className="card">
             <h2 style={s.cT}>🎲 Auslosung — {getRoundName(act.length, data.currentRound + 1)}</h2>
             <p style={s.dI}>{act.length} → {Math.floor(act.length / 2)} Duelle{act.length % 2 === 1 && " + 1 Freilos"}</p>
+            {(() => {
+              const sched = (data.schedule || []).find((x) => x.roundNumber === data.currentRound + 1);
+              return sched ? <p style={{ ...s.hint, color: "#fbbf24", fontSize: 13 }}>📅 Diese Runde ist für <b>Spieltag {sched.matchday}</b>{sched.isFinal ? " (Finale)" : ""} vorgesehen</p> : null;
+            })()}
             {data.config.useSeeding && <p style={{ ...s.hint, color: "#00e676" }}>📊 Setzliste aktiv</p>}
             {cr?.status === "active" ? <p style={s.hint}>Runde läuft noch — erst Punkte eintragen & abschließen.</p>
               : animDraw ? <div>
