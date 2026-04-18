@@ -71,12 +71,12 @@ CREATE OR REPLACE FUNCTION verify_password(
 RETURNS TEXT
 LANGUAGE plpgsql SECURITY DEFINER
 AS $$
-DECLARE r RECORD;
+DECLARE auth_row tournament_auth%ROWTYPE;
 BEGIN
-  SELECT * INTO r FROM tournament_auth WHERE tournament_id = 'default';
+  SELECT * INTO auth_row FROM tournament_auth WHERE tournament_id = 'default';
   IF NOT FOUND THEN RETURN ''; END IF;
-  IF r.password_hash = p_hash THEN RETURN 'admin'; END IF;
-  IF r.participant_hash IS NOT NULL AND r.participant_hash = p_hash THEN RETURN 'participant'; END IF;
+  IF auth_row.password_hash = p_hash THEN RETURN 'admin'; END IF;
+  IF auth_row.participant_hash IS NOT NULL AND auth_row.participant_hash = p_hash THEN RETURN 'participant'; END IF;
   RETURN '';
 END;
 $$;
