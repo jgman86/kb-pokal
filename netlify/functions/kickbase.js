@@ -56,8 +56,12 @@ async function kbLogin() {
     { path: "/user/login",     headers: browserHeaders, body: { email, password: pass, ext: false } },
   ];
 
-  let lastErr = "";
-  for (const a of attempts) {
+  const errors = [];
+  for (let i = 0; i < attempts.length; i++) {
+    const a = attempts[i];
+    const shape = a.body.email ? "email/password" : "em/pass";
+    const ua = a.headers["user-agent"]?.startsWith("Kickbase") ? "app" : "browser";
+    const tag = `[${i + 1}] ${a.path} (${ua}, ${shape})`;
     try {
       const r = await fetch(`${KB}${a.path}`, {
         method: "POST",
@@ -66,17 +70,17 @@ async function kbLogin() {
       });
       const txt = await r.text();
       let j = {}; try { j = JSON.parse(txt); } catch {}
-      if (!r.ok) { lastErr = `${a.path} (${r.status}): ${txt.slice(0, 200)}`; continue; }
+      if (!r.ok) { errors.push(`${tag} → ${r.status}: ${txt.slice(0, 160)}`); continue; }
       const token = j.tkn || j.token || j.access_token;
-      if (!token) { lastErr = `${a.path}: Kein Token in Antwort (${JSON.stringify(j).slice(0, 200)})`; continue; }
+      if (!token) { errors.push(`${tag} → 200 ohne Token: ${JSON.stringify(j).slice(0, 160)}`); continue; }
       cachedToken = token;
       cachedTokenExp = Date.now() + 45 * 60 * 1000;
       return token;
     } catch (e) {
-      lastErr = `${a.path}: ${e.message}`;
+      errors.push(`${tag} → Exception: ${e.message}`);
     }
   }
-  throw new Error(`Kickbase-Login fehlgeschlagen — alle Endpoints abgelehnt. Letzter Fehler: ${lastErr}`);
+  throw new Error(`Kickbase-Login fehlgeschlagen. Alle ${attempts.length} Versuche:\n` + errors.join("\n"));
 }
 
 async function kbGet(path, token) {
