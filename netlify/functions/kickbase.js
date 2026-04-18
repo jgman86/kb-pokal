@@ -32,13 +32,28 @@ async function kbLogin() {
   const pass = process.env.KICKBASE_PASSWORD;
   if (!email || !pass) throw new Error("KICKBASE_EMAIL/KICKBASE_PASSWORD nicht gesetzt");
 
-  // Kickbase hat über die Versionen verschiedene Login-Shapes gehabt.
-  // Wir probieren sie in Reihenfolge durch, bis eine erfolgreich ist.
+  // Kickbase lehnt Logins ohne plausible Browser-/App-Header mit 401 ab.
+  // Wir senden die Kombination aus Payload + Headern, die den Web-Client
+  // und die Mobile-App am nächsten nachahmt.
+  const browserHeaders = {
+    "content-type": "application/json",
+    "accept": "application/json",
+    "origin": "https://play.kickbase.com",
+    "referer": "https://play.kickbase.com/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "accept-language": "de-DE,de;q=0.9,en;q=0.8",
+  };
+  const appHeaders = {
+    "content-type": "application/json",
+    "accept": "application/json",
+    "user-agent": "Kickbase/iOS 6.6.2",
+  };
   const attempts = [
-    { path: "/v4/user/login",   body: { email, password: pass, ext: false } },
-    { path: "/v4/cauth/login",  body: { email, password: pass } },
-    { path: "/user/login",      body: { email, password: pass, ext: false } },
-    { path: "/v4/user/login",   body: { em: email, pass, loy: false, rep: {} } },
+    { path: "/v4/user/login",  headers: browserHeaders, body: { em: email, pass, loy: false, rep: {} } },
+    { path: "/v4/user/login",  headers: browserHeaders, body: { email, password: pass, ext: false } },
+    { path: "/v4/user/login",  headers: appHeaders,     body: { em: email, pass, loy: false, rep: {} } },
+    { path: "/v4/cauth/login", headers: browserHeaders, body: { email, password: pass } },
+    { path: "/user/login",     headers: browserHeaders, body: { email, password: pass, ext: false } },
   ];
 
   let lastErr = "";
@@ -46,7 +61,7 @@ async function kbLogin() {
     try {
       const r = await fetch(`${KB}${a.path}`, {
         method: "POST",
-        headers: { "content-type": "application/json", Accept: "application/json" },
+        headers: a.headers,
         body: JSON.stringify(a.body),
       });
       const txt = await r.text();
