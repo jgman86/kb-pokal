@@ -32,22 +32,36 @@ async function kbLogin() {
   const pass = process.env.KICKBASE_PASSWORD;
   if (!email || !pass) throw new Error("KICKBASE_EMAIL/KICKBASE_PASSWORD nicht gesetzt");
 
-  const r = await fetch(`${KB}/v4/user/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ em: email, pass, loy: false, rep: {} }),
-  });
-  if (!r.ok) {
-    const txt = await r.text();
-    throw new Error(`Kickbase-Login fehlgeschlagen (${r.status}): ${txt.slice(0, 300)}`);
+  // Kickbase hat über die Versionen verschiedene Login-Shapes gehabt.
+  // Wir probieren sie in Reihenfolge durch, bis eine erfolgreich ist.
+  const attempts = [
+    { path: "/v4/user/login",   body: { email, password: pass, ext: false } },
+    { path: "/v4/cauth/login",  body: { email, password: pass } },
+    { path: "/user/login",      body: { email, password: pass, ext: false } },
+    { path: "/v4/user/login",   body: { em: email, pass, loy: false, rep: {} } },
+  ];
+
+  let lastErr = "";
+  for (const a of attempts) {
+    try {
+      const r = await fetch(`${KB}${a.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(a.body),
+      });
+      const txt = await r.text();
+      let j = {}; try { j = JSON.parse(txt); } catch {}
+      if (!r.ok) { lastErr = `${a.path} (${r.status}): ${txt.slice(0, 200)}`; continue; }
+      const token = j.tkn || j.token || j.access_token;
+      if (!token) { lastErr = `${a.path}: Kein Token in Antwort (${JSON.stringify(j).slice(0, 200)})`; continue; }
+      cachedToken = token;
+      cachedTokenExp = Date.now() + 45 * 60 * 1000;
+      return token;
+    } catch (e) {
+      lastErr = `${a.path}: ${e.message}`;
+    }
   }
-  const j = await r.json();
-  const token = j.tkn || j.token;
-  if (!token) throw new Error("Kein Token in Login-Antwort: " + JSON.stringify(j).slice(0, 300));
-  cachedToken = token;
-  // Token ca. 1h gültig — wir cachen 45 Minuten, um Abläufe zu vermeiden
-  cachedTokenExp = Date.now() + 45 * 60 * 1000;
-  return token;
+  throw new Error(`Kickbase-Login fehlgeschlagen — alle Endpoints abgelehnt. Letzter Fehler: ${lastErr}`);
 }
 
 async function kbGet(path, token) {
