@@ -8,12 +8,21 @@ function getRoundName(rem, rn) { if (rem <= 2) return "Finale"; if (rem <= 4) re
 
 async function hashPassword(pw) { const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pw)); return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join(""); }
 
-async function rpcCall(fn, params) { if (!supabase) return null; const { data } = await supabase.rpc(fn, params); return data; }
+async function rpcCall(fn, params) {
+  if (!supabase) return null;
+  const { data, error } = await supabase.rpc(fn, params);
+  if (error) {
+    console.error(`RPC ${fn} error:`, error.message, error);
+    return { __error: true, message: error.message };
+  }
+  return data;
+}
 const rpcHasPassword = () => rpcCall("has_password", { p_tournament_id: TID });
 const rpcVerifyPassword = (h) => rpcCall("verify_password", { p_tournament_id: TID, p_hash: h });
 const rpcSetPassword = (h) => rpcCall("set_password", { p_tournament_id: TID, p_hash: h });
 const rpcChangePassword = (oh, nh) => rpcCall("change_password", { p_tournament_id: TID, p_old_hash: oh, p_new_hash: nh });
 const rpcSave = (h, d) => rpcCall("save_tournament", { p_tournament_id: TID, p_hash: h, p_data: d });
+function isRpcError(r) { return r && typeof r === "object" && r.__error; }
 async function loadTournament() { if (!supabase) return null; const { data } = await supabase.from("tournaments").select("data").eq("id", TID).single(); return data?.data || null; }
 
 const CSS = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{background:#0a0e17}input:focus,textarea:focus{outline:none;border-color:#00e676 !important}input::placeholder,textarea::placeholder{color:#4a5568}@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}@keyframes drawReveal{from{opacity:0;transform:scale(.85) rotateX(12deg)}to{opacity:1;transform:scale(1) rotateX(0)}}@keyframes confetti{0%{transform:translateY(0) rotate(0);opacity:1}100%{transform:translateY(-100px) rotate(720deg);opacity:0}}.btn:hover{filter:brightness(1.15);transform:translateY(-1px)}.btn:active{transform:translateY(0)}.card:hover{border-color:#1a3a2a}.tab:hover{color:#e2e8f0 !important}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#111827}::-webkit-scrollbar-thumb{background:#1e3a2a;border-radius:3px}`;
@@ -27,15 +36,39 @@ function PasswordGate({ onAuth }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
 
   useEffect(() => { (async () => {
+    if (!supabase) { setErr("⚠️ Supabase nicht konfiguriert. Prüfe VITE_SUPABASE_URL und VITE_SUPABASE_ANON_KEY in der .env Datei."); setMode("error"); return; }
     const s = sessionStorage.getItem("kb-session");
-    if (s) { const ok = await rpcVerifyPassword(s); if (ok) { onAuth(s); return; } sessionStorage.removeItem("kb-session"); }
-    const has = await rpcHasPassword(); setMode(has ? "login" : "setup");
+    if (s) { const ok = await rpcVerifyPassword(s); if (ok === true) { onAuth(s); return; } sessionStorage.removeItem("kb-session"); }
+    const has = await rpcHasPassword();
+    if (isRpcError(has)) { setErr(`⚠️ Supabase-Fehler: ${has.message}. Hast du das SQL-Setup ausgeführt? (supabase-setup.sql)`); setMode("error"); return; }
+    setMode(has === true ? "login" : "setup");
   })(); }, [onAuth]);
 
-  const doSetup = async () => { setErr(""); if (pw.length < 4) { setErr("Mindestens 4 Zeichen"); return; } if (pw !== pw2) { setErr("Passwörter stimmen nicht überein"); return; } setBusy(true); const h = await hashPassword(pw); const ok = await rpcSetPassword(h); setBusy(false); if (ok) { sessionStorage.setItem("kb-session", h); onAuth(h); } else { setErr("Passwort existiert bereits."); setMode("login"); } };
-  const doLogin = async () => { setErr(""); if (!pw) return; setBusy(true); const h = await hashPassword(pw); const ok = await rpcVerifyPassword(h); setBusy(false); if (ok) { sessionStorage.setItem("kb-session", h); onAuth(h); } else setErr("Falsches Passwort"); };
+  const doSetup = async () => {
+    setErr(""); if (pw.length < 4) { setErr("Mindestens 4 Zeichen"); return; }
+    if (pw !== pw2) { setErr("Passwörter stimmen nicht überein"); return; }
+    setBusy(true); const h = await hashPassword(pw);
+    const res = await rpcSetPassword(h); setBusy(false);
+    if (isRpcError(res)) { setErr(`Supabase-Fehler: ${res.message}`); return; }
+    if (res === true) { sessionStorage.setItem("kb-session", h); onAuth(h); }
+    else { setErr("Passwort wurde bereits gesetzt. Bitte einloggen."); setMode("login"); setPw(""); setPw2(""); }
+  };
+  const doLogin = async () => {
+    setErr(""); if (!pw) return; setBusy(true);
+    const h = await hashPassword(pw);
+    const res = await rpcVerifyPassword(h); setBusy(false);
+    if (isRpcError(res)) { setErr(`Supabase-Fehler: ${res.message}`); return; }
+    if (res === true) { sessionStorage.setItem("kb-session", h); onAuth(h); }
+    else setErr("Falsches Passwort");
+  };
 
-  if (mode === "loading") return <div style={gt.wrap}><div style={gt.spinner}/><p style={gt.lt}>Verbinde...</p></div>;
+  if (mode === "loading") return <div style={gt.wrap}><style>{CSS}</style><div style={gt.spinner}/><p style={gt.lt}>Verbinde...</p></div>;
+  if (mode === "error") return <div style={gt.wrap}><style>{CSS}</style><div style={gt.glow}/><div style={gt.card}>
+    <div style={{fontSize:40,textAlign:"center",marginBottom:8}}>⚠️</div><h1 style={gt.title}>Verbindungsproblem</h1>
+    <p style={{...gt.err,textAlign:"left",lineHeight:1.5}}>{err}</p>
+    <p style={{fontSize:11,color:"#64748b",marginTop:12,lineHeight:1.6}}>Checklist:<br/>1. Supabase-Projekt erstellt?<br/>2. SQL aus <code>supabase-setup.sql</code> ausgeführt?<br/>3. <code>.env</code> mit den richtigen Keys?<br/>4. Öffne die Browser-Konsole (F12) für Details.</p>
+    <button style={{...gt.btn,marginTop:14}} onClick={()=>window.location.reload()}>🔄 Nochmal versuchen</button>
+  </div></div>;
   return (<div style={gt.wrap}><style>{CSS}</style><div style={gt.glow}/><div style={gt.card}>
     <div style={{fontSize:40,textAlign:"center",marginBottom:8}}>🏆</div><h1 style={gt.title}>Kickbase Pokal</h1>
     {mode === "setup" ? <><p style={gt.desc}>Willkommen! Lege ein Passwort fest, das du im Discord teilst.</p>
@@ -59,10 +92,21 @@ const bk={wr:{position:"relative"},sc:{overflowX:"auto",overflowY:"hidden",paddi
 function Tournament({sessionHash}){
   const[data,setData]=useState(init);const[loading,setLoading]=useState(true);const[connected,setConnected]=useState(false);const[view,setView]=useState("overview");const[np,setNp]=useState({name:"",league:""});const[editSc,setEditSc]=useState(null);const[scInp,setScInp]=useState({s1:"",s2:""});const[cupNm,setCupNm]=useState("");const[confirm,setConfirm]=useState(null);const[animDraw,setAnimDraw]=useState(false);const[drawn,setDrawn]=useState([]);const[impTxt,setImpTxt]=useState("");const[showImp,setShowImp]=useState(false);const[sync,setSync]=useState(null);const[cpw,setCpw]=useState({show:false,o:"",n1:"",n2:"",err:"",ok:false});const skip=useRef(false);
 
-  useEffect(()=>{(async()=>{const r=await loadTournament();if(r){setData(r);setCupNm(r.cupName||"Kickbase Pokal");setConnected(true);}setLoading(false);})();},[]);
+  useEffect(()=>{(async()=>{
+    if(LOCAL_MODE){
+      try{const ls=localStorage.getItem("kb-pokal-data");if(ls){const p=JSON.parse(ls);setData(p);setCupNm(p.cupName||"Kickbase Pokal");}}catch{}
+      setConnected(false);setLoading(false);return;
+    }
+    const r=await loadTournament();if(r){setData(r);setCupNm(r.cupName||"Kickbase Pokal");setConnected(true);}setLoading(false);
+  })();},[]);
+
   useEffect(()=>{if(!supabase)return;const ch=supabase.channel("t-up").on("postgres_changes",{event:"*",schema:"public",table:"tournaments",filter:`id=eq.${TID}`},(pl)=>{if(skip.current){skip.current=false;return;}if(pl.new?.data){setData(pl.new.data);setCupNm(pl.new.data.cupName||"");setSync(new Date());}}).subscribe(s=>setConnected(s==="SUBSCRIBED"));return()=>{supabase.removeChannel(ch);};},[]);
 
-  const save=useCallback(async(nd)=>{setData(nd);skip.current=true;await rpcSave(sessionHash,nd);setSync(new Date());},[sessionHash]);
+  const save=useCallback(async(nd)=>{
+    setData(nd);
+    if(LOCAL_MODE){try{localStorage.setItem("kb-pokal-data",JSON.stringify(nd));}catch{}setSync(new Date());return;}
+    skip.current=true;const res=await rpcSave(sessionHash,nd);if(isRpcError(res)){console.error("Save failed:",res.message);alert("Speichern fehlgeschlagen: "+res.message);}else if(res!==true){console.error("Save rejected");}setSync(new Date());
+  },[sessionHash]);
 
   const addP=()=>{if(!np.name.trim())return;save({...data,players:[...data.players,{id:generateId(),name:np.name.trim(),league:np.league.trim(),eliminated:false}]});setNp({name:"",league:""});};
   const importP=()=>{const ps=impTxt.split("\n").filter(l=>l.trim()).map(l=>{const p=l.split(/[,;\t]/).map(x=>x.trim());return{id:generateId(),name:p[0]||"",league:p[1]||"",eliminated:false};}).filter(x=>x.name);save({...data,players:[...data.players,...ps]});setImpTxt("");setShowImp(false);};
@@ -79,7 +123,7 @@ function Tournament({sessionHash}){
   const resetT=()=>{save({...init,players:data.players.map(p=>({...p,eliminated:false})),cupName:data.cupName});setView("overview");setConfirm(null);};
   const fullRst=()=>{save(init);setCupNm("Kickbase Pokal");setView("overview");setConfirm(null);};
 
-  const chgPw=async()=>{setCpw(p=>({...p,err:"",ok:false}));if(cpw.n1.length<4){setCpw(p=>({...p,err:"Mind. 4 Zeichen"}));return;}if(cpw.n1!==cpw.n2){setCpw(p=>({...p,err:"Stimmen nicht überein"}));return;}const oh=await hashPassword(cpw.o),nh=await hashPassword(cpw.n1);const ok=await rpcChangePassword(oh,nh);if(ok){sessionStorage.setItem("kb-session",nh);setCpw({show:false,o:"",n1:"",n2:"",err:"",ok:true});}else setCpw(p=>({...p,err:"Altes Passwort falsch"}));};
+  const chgPw=async()=>{setCpw(p=>({...p,err:"",ok:false}));if(cpw.n1.length<4){setCpw(p=>({...p,err:"Mind. 4 Zeichen"}));return;}if(cpw.n1!==cpw.n2){setCpw(p=>({...p,err:"Stimmen nicht überein"}));return;}const oh=await hashPassword(cpw.o),nh=await hashPassword(cpw.n1);const res=await rpcChangePassword(oh,nh);if(isRpcError(res)){setCpw(p=>({...p,err:`Fehler: ${res.message}`}));return;}if(res===true){sessionStorage.setItem("kb-session",nh);setCpw({show:false,o:"",n1:"",n2:"",err:"",ok:true});}else setCpw(p=>({...p,err:"Altes Passwort falsch"}));};
   const logout=()=>{sessionStorage.removeItem("kb-session");window.location.reload();};
 
   const gp=(id)=>data.players.find(p=>p.id===id);const act=data.players.filter(p=>!p.eliminated);const cr=data.rounds.find(r=>r.roundNumber===data.currentRound);const allDone=cr?.pairings.every(p=>p.score1!==null&&p.score2!==null);const W=data.status==="finished"?act[0]:null;
@@ -89,7 +133,7 @@ function Tournament({sessionHash}){
   const tabs=[{k:"overview",l:"Übersicht",i:"📋"},...(data.status==="setup"?[{k:"players",l:"Teilnehmer",i:"👥"}]:[]),...(data.status==="running"?[{k:"draw",l:"Auslosung",i:"🎲"},{k:"round",l:"Runde",i:"⚔️"}]:[]),...(data.rounds.length>0?[{k:"bracket",l:"Turnierbaum",i:"🏆"},{k:"history",l:"Ergebnisse",i:"📊"}]:[]),{k:"settings",l:"⚙️",i:""}];
 
   return(<div style={s.app}><style>{CSS}</style>
-    <header style={s.hdr}><div style={s.hdrI}><div style={{fontSize:34,marginBottom:4}}>🏆</div><h1 style={s.title}>{data.cupName}</h1><p style={s.sub}>{data.status==="setup"?"Turnierplanung":data.status==="finished"?"Abgeschlossen":`Runde ${data.currentRound} · ${act.length} übrig`}</p><div style={s.conn}><span style={{...s.dot,background:connected?"#22c55e":"#fbbf24"}}/><span style={s.connT}>{connected?"Live":"..."}</span><span style={{fontSize:10}}>🔒</span>{sync&&<span style={s.syncT}>{sync.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})}</span>}</div></div><div style={s.glow}/></header>
+    <header style={s.hdr}><div style={s.hdrI}><div style={{fontSize:34,marginBottom:4}}>🏆</div><h1 style={s.title}>{data.cupName}</h1><p style={s.sub}>{data.status==="setup"?"Turnierplanung":data.status==="finished"?"Abgeschlossen":`Runde ${data.currentRound} · ${act.length} übrig`}</p><div style={s.conn}><span style={{...s.dot,background:LOCAL_MODE?"#fbbf24":connected?"#22c55e":"#fbbf24"}}/><span style={s.connT}>{LOCAL_MODE?"Lokal (Test)":connected?"Live":"..."}</span>{!LOCAL_MODE&&<span style={{fontSize:10}}>🔒</span>}{sync&&<span style={s.syncT}>{sync.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})}</span>}</div></div><div style={s.glow}/></header>
 
     {W&&<div style={s.wB}><div style={s.wCf}>{[...Array(12)].map((_,i)=><span key={i} style={{...s.wP,left:`${6+i*8}%`,animationDelay:`${i*.12}s`,background:["#00e676","#ffd700","#ff4081","#448aff","#ff9100"][i%5]}}/>)}</div><div style={s.wCt}><span style={{fontSize:34}}>👑</span><span style={s.wN}>{W.name}</span><span style={s.wL}>Pokalsieger!</span></div></div>}
 
@@ -118,8 +162,8 @@ function Tournament({sessionHash}){
 
       {view==="settings"&&<div style={s.fade}>
         <div style={s.card} className="card"><h2 style={s.cT}>Einstellungen</h2>{data.status!=="setup"&&<button className="btn" style={{...s.bD,marginBottom:10}} onClick={()=>setConfirm("reset")}>🔄 Reset (Teilnehmer behalten)</button>}<button className="btn" style={s.bD} onClick={()=>setConfirm("full")}>🗑️ Alles löschen</button></div>
-        <div style={{...s.card,marginTop:12}} className="card"><h3 style={s.cS}>🔐 Passwort ändern</h3>{cpw.show?<><div style={s.fl}><label style={s.lb}>Altes Passwort</label><input type="password" style={s.inp} value={cpw.o} onChange={e=>setCpw(p=>({...p,o:e.target.value}))}/></div><div style={s.fl}><label style={s.lb}>Neues Passwort</label><input type="password" style={s.inp} value={cpw.n1} onChange={e=>setCpw(p=>({...p,n1:e.target.value}))} placeholder="Mind. 4 Zeichen"/></div><div style={s.fl}><label style={s.lb}>Bestätigen</label><input type="password" style={s.inp} value={cpw.n2} onChange={e=>setCpw(p=>({...p,n2:e.target.value}))}/></div>{cpw.err&&<p style={{fontSize:12,color:"#ef4444",marginBottom:8}}>{cpw.err}</p>}<div style={{display:"flex",gap:6}}><button className="btn" style={s.bS} onClick={()=>setCpw({show:false,o:"",n1:"",n2:"",err:"",ok:false})}>Abbrechen</button><button className="btn" style={s.bP} onClick={chgPw}>Ändern</button></div></>:<button className="btn" style={s.bS} onClick={()=>setCpw(p=>({...p,show:true}))}>Passwort ändern</button>}</div>
-        <div style={{...s.card,marginTop:12}} className="card"><h3 style={s.cS}>Session</h3><p style={s.info}>Tab schließen = automatisch ausgeloggt.</p><button className="btn" style={{...s.bS,marginTop:8}} onClick={logout}>🚪 Ausloggen</button></div>
+        <div style={{...s.card,marginTop:12}} className="card"><h3 style={s.cS}>{LOCAL_MODE?"📍 Lokaler Testmodus":"🔐 Passwort ändern"}</h3>{LOCAL_MODE?<p style={s.info}>Du testest lokal ohne Supabase. Daten werden im Browser gespeichert (localStorage). Für den echten Betrieb: Supabase einrichten, .env befüllen und deployen.</p>:cpw.show?<><div style={s.fl}><label style={s.lb}>Altes Passwort</label><input type="password" style={s.inp} value={cpw.o} onChange={e=>setCpw(p=>({...p,o:e.target.value}))}/></div><div style={s.fl}><label style={s.lb}>Neues Passwort</label><input type="password" style={s.inp} value={cpw.n1} onChange={e=>setCpw(p=>({...p,n1:e.target.value}))} placeholder="Mind. 4 Zeichen"/></div><div style={s.fl}><label style={s.lb}>Bestätigen</label><input type="password" style={s.inp} value={cpw.n2} onChange={e=>setCpw(p=>({...p,n2:e.target.value}))}/></div>{cpw.err&&<p style={{fontSize:12,color:"#ef4444",marginBottom:8}}>{cpw.err}</p>}<div style={{display:"flex",gap:6}}><button className="btn" style={s.bS} onClick={()=>setCpw({show:false,o:"",n1:"",n2:"",err:"",ok:false})}>Abbrechen</button><button className="btn" style={s.bP} onClick={chgPw}>Ändern</button></div></>:<button className="btn" style={s.bS} onClick={()=>setCpw(p=>({...p,show:true}))}>Passwort ändern</button>}</div>
+        {!LOCAL_MODE&&<div style={{...s.card,marginTop:12}} className="card"><h3 style={s.cS}>Session</h3><p style={s.info}>Tab schließen = automatisch ausgeloggt.</p><button className="btn" style={{...s.bS,marginTop:8}} onClick={logout}>🚪 Ausloggen</button></div>}
       </div>}
     </main>
 
@@ -128,7 +172,11 @@ function Tournament({sessionHash}){
 }
 
 /* ═══ ROOT ═══ */
-export default function App(){const[h,setH]=useState(null);if(!h)return<PasswordGate onAuth={setH}/>;return<Tournament sessionHash={h}/>;}
-
+const LOCAL_MODE = !supabase;
+export default function App(){
+  const[h,setH]=useState(LOCAL_MODE ? "local" : null);
+  if(!h)return<PasswordGate onAuth={setH}/>;
+  return<Tournament sessionHash={h}/>;
+}
 /* ═══ STYLES ═══ */
 const s={app:{fontFamily:"'DM Sans',sans-serif",minHeight:"100vh",background:"linear-gradient(180deg,#0a0e17,#0d1520)",color:"#e2e8f0",maxWidth:660,margin:"0 auto",paddingBottom:40},lw:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0a0e17",fontFamily:"'DM Sans',sans-serif"},sp:{width:26,height:26,border:"3px solid #1e293b",borderTop:"3px solid #00e676",borderRadius:"50%",animation:"pulse 1s infinite"},lt:{marginTop:10,color:"#64748b",fontSize:12},hdr:{position:"relative",padding:"24px 16px 14px",textAlign:"center",overflow:"hidden"},hdrI:{position:"relative",zIndex:1},glow:{position:"absolute",top:-50,left:"50%",transform:"translateX(-50%)",width:260,height:160,background:"radial-gradient(ellipse,rgba(0,230,118,.1),transparent 70%)",pointerEvents:"none"},title:{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,letterSpacing:3,color:"#f8fafc",lineHeight:1},sub:{fontSize:11,color:"#64748b",marginTop:4,letterSpacing:.5},conn:{display:"flex",alignItems:"center",justifyContent:"center",gap:6,marginTop:8},dot:{width:6,height:6,borderRadius:"50%",flexShrink:0},connT:{fontSize:10,color:"#64748b"},syncT:{fontSize:9,color:"#334155"},nav:{display:"flex",gap:1,padding:"0 8px",overflowX:"auto",borderBottom:"1px solid #1e293b",marginBottom:12},tab:{background:"none",border:"none",color:"#64748b",fontSize:11,fontWeight:500,padding:"8px 10px",cursor:"pointer",whiteSpace:"nowrap",borderBottom:"2px solid transparent",transition:"all .2s",fontFamily:"'DM Sans',sans-serif"},tabA:{color:"#00e676",borderBottomColor:"#00e676"},main:{padding:"0 12px"},fade:{animation:"fadeIn .3s ease-out"},card:{background:"#111827",border:"1px solid #1e293b",borderRadius:12,padding:16,transition:"border-color .2s"},cT:{fontFamily:"'Bebas Neue',sans-serif",fontSize:19,letterSpacing:1.5,color:"#f1f5f9",marginBottom:12},cS:{fontSize:12,fontWeight:600,color:"#94a3b8",marginBottom:8,textTransform:"uppercase",letterSpacing:.7},fl:{marginBottom:12},lb:{display:"block",fontSize:10,fontWeight:600,color:"#64748b",marginBottom:4,textTransform:"uppercase",letterSpacing:.7},inp:{width:"100%",padding:"8px 11px",background:"#0d1520",border:"1px solid #1e293b",borderRadius:8,color:"#e2e8f0",fontSize:13,fontFamily:"'DM Sans',sans-serif"},ta:{width:"100%",padding:"8px 11px",background:"#0d1520",border:"1px solid #1e293b",borderRadius:8,color:"#e2e8f0",fontSize:11,fontFamily:"monospace",resize:"vertical"},ar:{display:"flex",gap:6,marginBottom:8},bP:{width:"100%",padding:"10px 16px",background:"linear-gradient(135deg,#00c853,#00e676)",color:"#0a0e17",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"},bS:{padding:"8px 16px",background:"#1e293b",color:"#cbd5e1",border:"1px solid #334155",borderRadius:8,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"},bA:{width:40,height:40,background:"#00e676",color:"#0a0e17",border:"none",borderRadius:8,fontSize:20,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},bTx:{background:"none",border:"none",color:"#64748b",fontSize:11,cursor:"pointer",padding:"3px 0",fontFamily:"'DM Sans',sans-serif"},bEn:{width:"100%",padding:"8px",background:"transparent",border:"1px dashed #334155",borderRadius:8,color:"#94a3b8",fontSize:12,cursor:"pointer",marginTop:8,fontFamily:"'DM Sans',sans-serif"},bCp:{width:"100%",padding:"12px 16px",background:"linear-gradient(135deg,#00c853,#00e676)",color:"#0a0e17",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",marginTop:12,fontFamily:"'DM Sans',sans-serif"},bD:{width:"100%",padding:"10px 16px",background:"#1c1917",color:"#ef4444",border:"1px solid #7f1d1d",borderRadius:10,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"},bRm:{background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:12,padding:"3px 5px"},sr:{display:"flex",gap:8,marginBottom:16},st:{flex:1,background:"#0d1520",borderRadius:10,padding:"10px 8px",textAlign:"center"},sn:{display:"block",fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#00e676",lineHeight:1},sl:{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:.7,marginTop:2,display:"block"},pR:{display:"flex",alignItems:"center",gap:7,padding:"8px 0",borderBottom:"1px solid #1a2030"},pN:{width:20,fontSize:10,color:"#475569",textAlign:"center"},pNm:{flex:1,fontSize:13,fontWeight:500},lB:{fontSize:10,background:"#162032",color:"#64748b",padding:"2px 6px",borderRadius:16},cps:{display:"flex",flexWrap:"wrap",gap:4},cp:{fontSize:12,background:"#162032",padding:"4px 9px",borderRadius:16,display:"inline-flex",alignItems:"center",gap:4},cpL:{fontSize:10,color:"#64748b"},hint:{fontSize:11,color:"#475569",marginTop:6,textAlign:"center"},dI:{fontSize:13,color:"#94a3b8",marginBottom:14},drP:{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"9px",background:"#0d1520",borderRadius:10,marginBottom:5,border:"1px solid #1a3a2a"},drN:{fontSize:14,fontWeight:600,color:"#e2e8f0"},vsT:{fontSize:10,fontWeight:700,color:"#00e676",letterSpacing:1},mC:{background:"#111827",border:"1px solid #1e293b",borderRadius:12,padding:12,marginTop:8},mI:{display:"flex",alignItems:"center",gap:5},mP:{flex:1,display:"flex",flexDirection:"column",gap:1},mN:{fontSize:14,fontWeight:600,color:"#f1f5f9"},mLg:{fontSize:10,color:"#64748b"},mS:{fontSize:16,fontWeight:700,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1,marginTop:1},vsC:{width:32,height:32,borderRadius:"50%",background:"#1a2030",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:"#475569",flexShrink:0},sE:{marginTop:8,padding:8,background:"#0d1520",borderRadius:10},sR:{display:"flex",gap:8,marginBottom:6},sLb:{fontSize:10,color:"#64748b",marginBottom:2,display:"block"},sI:{width:"100%",padding:"8px",background:"#111827",border:"1px solid #1e293b",borderRadius:8,color:"#e2e8f0",fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",textAlign:"center"},sA:{display:"flex",gap:6,justifyContent:"flex-end"},byC:{background:"#111827",border:"1px dashed #334155",borderRadius:12,padding:"10px 12px",marginTop:8,display:"flex",alignItems:"center",gap:6,fontSize:13,color:"#94a3b8"},rH:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2},bdg:{fontSize:10,fontWeight:600,padding:"3px 8px",borderRadius:16,letterSpacing:.4},mdt:{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:8,fontFamily:"'DM Sans',sans-serif"},hP:{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1a2030"},hN:{fontSize:13},hS:{fontSize:12,fontWeight:700,color:"#64748b",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1},hB:{fontSize:12,color:"#64748b",padding:"5px 0",fontStyle:"italic"},wB:{position:"relative",margin:"0 12px 12px",padding:"16px",background:"linear-gradient(135deg,#14532d,#1a4731)",border:"1px solid #22c55e33",borderRadius:14,textAlign:"center",overflow:"hidden"},wCf:{position:"absolute",inset:0,pointerEvents:"none",overflow:"hidden"},wP:{position:"absolute",bottom:0,width:5,height:5,borderRadius:1,animation:"confetti 2s ease-out infinite"},wCt:{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",gap:2},wN:{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#f0fdf4",letterSpacing:2},wL:{fontSize:10,color:"#4ade80",textTransform:"uppercase",letterSpacing:2,fontWeight:600},fT:{fontSize:13,color:"#94a3b8"},info:{fontSize:12,color:"#64748b",lineHeight:1.6},ov:{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,padding:16},mo:{background:"#111827",border:"1px solid #1e293b",borderRadius:14,padding:20,maxWidth:360,width:"100%",animation:"fadeIn .2s ease-out"},moT:{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:"#f1f5f9",marginBottom:5,letterSpacing:1},moTx:{fontSize:12,color:"#94a3b8",marginBottom:16,lineHeight:1.5},moA:{display:"flex",gap:6,justifyContent:"flex-end"}};
