@@ -155,16 +155,33 @@ export default async (req) => {
     }
 
     if (action === "members") {
-      // Dokumentiert: GET /v4/leagues/{lid}/settings/managers → { us: [{i, n, uim, isu, cbu}] }
+      // Primär: /settings/managers (nur für Liga-Admins, liefert vollständige Manager-Liste).
+      // Fallback: /ranking — funktioniert für jedes Mitglied, enthält alle Nutzer mit i/n.
       if (!lid) return json({ error: "lid fehlt" }, 400);
-      const raw = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/settings/managers`, token);
-      const arr = raw.us || [];
+      let raw = null, source = null, tried = [];
+      try {
+        raw = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/settings/managers`, token);
+        source = "settings/managers";
+      } catch (e) {
+        tried.push(`settings/managers → ${e.message.slice(0, 120)}`);
+      }
+      if (!raw) {
+        try {
+          raw = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/ranking`, token);
+          source = "ranking";
+        } catch (e) {
+          tried.push(`ranking → ${e.message.slice(0, 120)}`);
+        }
+      }
+      if (!raw) return json({ error: "Kein Members-Endpoint erreichbar", tried }, 502);
+      // Beide liefern Mitglieder unter `us` (Kickbase-Konvention)
+      const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
       const members = arr.map((m) => ({
-        id: String(m.i || ""),
-        name: m.n || "?",
-        image: m.uim || "",
+        id: String(m.i || m.id || m.userId || ""),
+        name: m.n || m.name || m.nickname || "?",
+        image: m.uim || m.profileUrl || "",
       })).filter((m) => m.id);
-      return json({ members, count: members.length, _rawSample: members.length === 0 ? JSON.stringify(raw).slice(0, 500) : undefined });
+      return json({ members, source, count: members.length, _rawSample: members.length === 0 ? JSON.stringify(raw).slice(0, 500) : undefined });
     }
 
     if (action === "lineup") {
