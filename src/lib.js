@@ -60,7 +60,7 @@ export async function listTournaments() {
 // ============================================
 export const defaultConfig = () => ({ tiebreakMode: "marketValue", useSeeding: false, deadlineRequired: false });
 export const normalize = (d) => ({
-  players: (d?.players || []).map((p) => ({ marketValue: 0, avatar: "", isTitleHolder: false, seed: 0, ...p })),
+  players: (d?.players || []).map((p) => ({ marketValue: 0, avatar: "", isTitleHolder: false, seed: 0, kickbaseLeagueId: "", kickbaseUserId: "", ...p })),
   rounds: (d?.rounds || []).map((r) => ({
     ...r,
     pairings: (r.pairings || []).map((m) => ({
@@ -172,6 +172,20 @@ export function computeStats(data) {
   }
   const avg = players.map((p) => ({ player: p, avg: counts[p.id] ? (totals[p.id] / counts[p.id]) : null })).filter((x) => x.avg != null).sort((a, b) => b.avg - a.avg);
   return { topRoundScore, biggestWin, avg, matchCount };
+}
+
+// ============================================
+// Kickbase-API (via Netlify function /api/kickbase)
+// ============================================
+export async function kbFetch(action, params, adminHash) {
+  const qs = new URLSearchParams({ action, ...(params || {}) }).toString();
+  const r = await fetch(`/api/kickbase?${qs}`, {
+    headers: { "x-admin-hash": adminHash || "" },
+  });
+  const txt = await r.text();
+  let j; try { j = JSON.parse(txt); } catch { j = { error: `Unparseable (${r.status}): ${txt.slice(0, 200)}` }; }
+  if (!r.ok) return { __error: true, status: r.status, ...j };
+  return j;
 }
 
 // ============================================

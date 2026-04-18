@@ -6,7 +6,7 @@ import {
   rpcSave, rpcCreate, rpcDelete,
   loadTournament, listTournaments,
   normalize, resolveTiebreak, seededPairings, randomPairings,
-  computeStats, postDiscord,
+  computeStats, postDiscord, kbFetch,
   requestNotificationPermission, notify,
   formatDeadline, timeUntil,
   getSession, setSession, clearSession,
@@ -131,6 +131,12 @@ function Tournament({ session, onLogout }) {
   const [commentInp, setCommentInp] = useState({});
   const [newCupName, setNewCupName] = useState("");
   const [coinFlip, setCoinFlip] = useState(null);
+  // Kickbase state
+  const [kbStatus, setKbStatus] = useState({ checked: false, ok: false, message: "" });
+  const [kbLeagues, setKbLeagues] = useState([]); // [{id,name}]
+  const [kbMembers, setKbMembers] = useState({}); // {leagueId: [{id,name}]}
+  const [kbBusy, setKbBusy] = useState(false);
+  const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
   const skip = useRef(false);
 
   const isAdmin = session.role === "admin";
@@ -451,6 +457,74 @@ function Tournament({ session, onLogout }) {
   // ── Identity
   const saveIdentity = () => { setIdentity(identityInput.trim()); setIdent(identityInput.trim()); };
 
+  // ── Kickbase
+  const kbTest = async () => {
+    setKbBusy(true); setKbStatus({ checked: false, ok: false, message: "" });
+    const r = await kbFetch("test", null, session.hash);
+    if (r.__error) setKbStatus({ checked: true, ok: false, message: r.error || `Fehler ${r.status}` });
+    else {
+      setKbStatus({ checked: true, ok: true, message: r.message || "OK" });
+      const lg = await kbFetch("leagues", null, session.hash);
+      if (!lg.__error) setKbLeagues(lg.leagues || []);
+    }
+    setKbBusy(false);
+  };
+  const kbLoadMembers = async (lid) => {
+    if (!lid || kbMembers[lid]) return;
+    const r = await kbFetch("members", { lid }, session.hash);
+    if (!r.__error) setKbMembers((m) => ({ ...m, [lid]: r.members || [] }));
+  };
+  useEffect(() => {
+    const lids = new Set(data.players.map((p) => p.kickbaseLeagueId).filter(Boolean));
+    lids.forEach((lid) => kbLoadMembers(lid));
+    // eslint-disable-next-line
+  }, [data.players.length, kbStatus.ok]);
+
+  const kbFetchPoints = async () => {
+    if (!cr) return;
+    const md = cr.matchday && cr.matchday.match(/\d+/)?.[0];
+    if (!md) { alert('Spieltag-Feld ausfüllen (z.B. "15").'); return; }
+    setKbBusy(true);
+    const needed = new Set(cr.pairings.flatMap((p) => {
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
+      return [p1?.kickbaseLeagueId, p2?.kickbaseLeagueId].filter(Boolean);
+    }));
+    if (needed.size === 0) { setKbBusy(false); alert("Keine Teilnehmer mit Kickbase-Zuordnung. Im Players-Tab verknüpfen."); return; }
+    const pointsByLid = {};
+    for (const lid of needed) {
+      const r = await kbFetch("points", { lid, md }, session.hash);
+      if (r.__error) { setKbBusy(false); alert(`Punkte-Fetch Liga ${lid} fehlgeschlagen: ${r.error}`); return; }
+      pointsByLid[lid] = Object.fromEntries((r.points || []).map((x) => [x.id, x.points]));
+    }
+    const results = cr.pairings.map((p) => {
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
+      const s1 = (p1?.kickbaseLeagueId && p1?.kickbaseUserId) ? pointsByLid[p1.kickbaseLeagueId]?.[p1.kickbaseUserId] ?? null : null;
+      const s2 = (p2?.kickbaseLeagueId && p2?.kickbaseUserId) ? pointsByLid[p2.kickbaseLeagueId]?.[p2.kickbaseUserId] ?? null : null;
+      const missing = [!p1?.kickbaseUserId && p1?.name, !p2?.kickbaseUserId && p2?.name].filter(Boolean);
+      return { pairingId: p.id, p1Name: p1?.name, p2Name: p2?.name, s1, s2, missing };
+    });
+    setKbFetchModal({ results, md });
+    setKbBusy(false);
+  };
+
+  const applyKbPoints = () => {
+    if (!kbFetchModal) return;
+    const rounds = [...data.rounds];
+    const ri = rounds.findIndex((r) => r.roundNumber === data.currentRound);
+    if (ri < 0) return;
+    const prs = rounds[ri].pairings.map((p) => {
+      const r = kbFetchModal.results.find((x) => x.pairingId === p.id);
+      if (!r) return p;
+      const patch = {};
+      if (r.s1 != null) patch.score1 = r.s1;
+      if (r.s2 != null) patch.score2 = r.s2;
+      return { ...p, ...patch };
+    });
+    rounds[ri] = { ...rounds[ri], pairings: prs };
+    save({ ...data, rounds });
+    setKbFetchModal(null);
+  };
+
   // ── Notifications
   const enableNotifs = async () => {
     const r = await requestNotificationPermission();
@@ -651,8 +725,9 @@ function Tournament({ session, onLogout }) {
           </div>
           {data.players.length > 0 && <div style={{ ...s.card, marginTop: 12 }} className="card">
             <h3 style={s.cS}>{data.players.length} Teilnehmer</h3>
+            {kbLeagues.length > 0 && <p style={{ ...s.info, marginBottom: 8 }}>⚡ Kickbase-Mapping: Liga wählen → User aus Dropdown (wird nach Liga-Wahl geladen)</p>}
             {data.players.map((p, i) => (
-              <div key={p.id} style={s.pR}>
+              <div key={p.id} style={{ ...s.pR, flexWrap: "wrap" }}>
                 <span style={s.pN}>{i + 1}</span>
                 <Av p={p} size={22} />
                 <span style={s.pNm}>
@@ -664,6 +739,18 @@ function Tournament({ session, onLogout }) {
                 {p.seed > 0 && <span style={{ ...s.lB, background: "#2a1a3a", color: "#c084fc" }}>#{p.seed}</span>}
                 <button style={s.bRm} title="Titelverteidiger" onClick={() => setTitleHolder(p.id)}>🏆</button>
                 <button style={s.bRm} onClick={() => remP(p.id)}>✕</button>
+                {kbLeagues.length > 0 && (
+                  <div style={{ flexBasis: "100%", display: "flex", gap: 6, marginTop: 6 }}>
+                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseLeagueId || ""} onChange={(e) => { updatePlayer(p.id, { kickbaseLeagueId: e.target.value, kickbaseUserId: "" }); kbLoadMembers(e.target.value); }}>
+                      <option value="">— Kickbase-Liga —</option>
+                      {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                    <select style={{ ...s.sel, flex: 1, fontSize: 11 }} value={p.kickbaseUserId || ""} disabled={!p.kickbaseLeagueId} onChange={(e) => updatePlayer(p.id, { kickbaseUserId: e.target.value })}>
+                      <option value="">— User —</option>
+                      {(kbMembers[p.kickbaseLeagueId] || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </div>
+                )}
               </div>
             ))}
           </div>}
@@ -707,6 +794,11 @@ function Tournament({ session, onLogout }) {
               postDiscord("deadline", { cupName: data.cupName, roundName: cr.name, deadline: formatDeadline(cr.deadline), missing });
             }} isAdmin={isAdmin} />}
             {data.config.tiebreakMode === "twoLeg" && <p style={{ ...s.hint, color: "#a855f7" }}>Modus: Hin- & Rückrunde</p>}
+            {isAdmin && !LOCAL_MODE && cr.status === "active" && (
+              <button className="btn" style={{ ...s.bS, marginTop: 8, width: "100%" }} disabled={kbBusy} onClick={kbFetchPoints}>
+                {kbBusy ? "Lade..." : "⚡ Punkte aus Kickbase laden"}
+              </button>
+            )}
           </div>
           {cr.pairings.map((p) => {
             const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
@@ -914,6 +1006,22 @@ function Tournament({ session, onLogout }) {
               : <button className="btn" style={{ ...s.bS, marginTop: 8 }} onClick={enableNotifs}>Aktivieren</button>}
           </div>
 
+          {isAdmin && !LOCAL_MODE && <div style={{ ...s.card, marginTop: 12 }} className="card">
+            <h3 style={s.cS}>⚡ Kickbase-Anbindung</h3>
+            <p style={s.info}>Punkte können pro Spieltag direkt aus Kickbase geladen werden. Voraussetzung: Netlify-Env-Vars <code>KICKBASE_EMAIL</code>, <code>KICKBASE_PASSWORD</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_ANON_KEY</code>.</p>
+            <button className="btn" style={{ ...s.bS, marginTop: 8 }} disabled={kbBusy} onClick={kbTest}>{kbBusy ? "Prüfe..." : "🔌 Verbindung testen"}</button>
+            {kbStatus.checked && (
+              <p style={{ fontSize: 12, marginTop: 8, color: kbStatus.ok ? "#4ade80" : "#ef4444", lineHeight: 1.4 }}>
+                {kbStatus.ok ? "✓ " : "✗ "}{kbStatus.message}
+              </p>
+            )}
+            {kbStatus.ok && kbLeagues.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8" }}>
+                Gefundene Ligen: {kbLeagues.map((l) => <span key={l.id} style={{ ...s.lB, marginRight: 4 }}>{l.name}</span>)}
+              </div>
+            )}
+          </div>}
+
           {isAdmin && <div style={{ ...s.card, marginTop: 12 }} className="card">
             <h3 style={s.cS}>🏆 Mehrere Pokale</h3>
             <div style={{ marginBottom: 8 }}>
@@ -972,6 +1080,31 @@ function Tournament({ session, onLogout }) {
           </div>}
         </div>}
       </main>
+
+      {kbFetchModal && <div style={s.ov} onClick={() => setKbFetchModal(null)}>
+        <div style={s.mo} onClick={(e) => e.stopPropagation()}>
+          <h3 style={s.moT}>⚡ Kickbase-Punkte Spieltag {kbFetchModal.md}</h3>
+          <p style={s.moTx}>Prüfe die Werte und übernehme sie, oder schließe den Dialog.</p>
+          <div style={{ maxHeight: "50vh", overflowY: "auto", marginBottom: 10 }}>
+            {kbFetchModal.results.map((r) => (
+              <div key={r.pairingId} style={{ ...s.hP, borderColor: r.missing.length ? "#7f1d1d" : "#1a2030" }}>
+                <span style={{ ...s.hN, color: r.s1 != null ? "#e2e8f0" : "#ef4444" }}>{r.p1Name} {r.s1 != null ? `→ ${r.s1}` : "✗"}</span>
+                <span style={s.hS}>vs</span>
+                <span style={{ ...s.hN, textAlign: "right", color: r.s2 != null ? "#e2e8f0" : "#ef4444" }}>{r.p2Name} {r.s2 != null ? `→ ${r.s2}` : "✗"}</span>
+              </div>
+            ))}
+          </div>
+          {kbFetchModal.results.some((r) => r.missing.length > 0) && (
+            <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>
+              ⚠️ Einige Teilnehmer ohne Kickbase-Mapping — diese bleiben unverändert.
+            </p>
+          )}
+          <div style={s.moA}>
+            <button className="btn" style={s.bS} onClick={() => setKbFetchModal(null)}>Abbrechen</button>
+            <button className="btn" style={s.bP} onClick={applyKbPoints}>Übernehmen</button>
+          </div>
+        </div>
+      </div>}
 
       {confirm && <div style={s.ov} onClick={() => setConfirm(null)}>
         <div style={s.mo} onClick={(e) => e.stopPropagation()}>
