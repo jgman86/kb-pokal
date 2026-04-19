@@ -275,9 +275,10 @@ function Tournament({ session, onLogout }) {
       setView("round");
       // Discord + notify
       postDiscord("draw", {
-        cupName: nd.cupName, roundName: round.name,
-        pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p2: gp(m.player2Id)?.name || "?" })),
+        cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
+        pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p1Liga: gp(m.player1Id)?.league || "", p2: gp(m.player2Id)?.name || "?", p2Liga: gp(m.player2Id)?.league || "" })),
         bye: bye ? gp(bye)?.name : null,
+        remaining: act.length, totalPlayers: nd.players.length,
       });
       maybeNotifyDraw(nd, identity);
     }, (pairings.length + 1) * 500);
@@ -338,10 +339,14 @@ function Tournament({ session, onLogout }) {
     if (prs[pi].score1 != null && prs[pi].score2 != null) {
       const p1 = gp(prs[pi].player1Id), p2 = gp(prs[pi].player2Id);
       const winner = prs[pi].score1 > prs[pi].score2 ? p1 : prs[pi].score2 > prs[pi].score1 ? p2 : null;
+      const roundForDiscord = rounds[ri];
+      const doneCount = roundForDiscord.pairings.filter((x) => x.score1 != null && x.score2 != null).length;
       postDiscord("result", {
-        cupName: nd.cupName, roundName: rounds[ri].name,
-        p1: p1?.name, p2: p2?.name, s1: prs[pi].score1, s2: prs[pi].score2,
+        cupName: nd.cupName, roundName: roundForDiscord.name, matchday: roundForDiscord.matchday,
+        p1: p1?.name, p1Liga: p1?.league || "", p2: p2?.name, p2Liga: p2?.league || "",
+        s1: prs[pi].score1, s2: prs[pi].score2,
         winner: winner?.name || "offen (Gleichstand)",
+        progress: { done: doneCount, total: roundForDiscord.pairings.length },
       });
     }
   };
@@ -383,8 +388,25 @@ function Tournament({ session, onLogout }) {
     setView(fin ? "bracket" : "draw");
     setConfirm(null);
 
-    postDiscord("elimination", { cupName: nd.cupName, roundName: round.name, eliminated });
-    if (fin && rem[0]) postDiscord("winner", { cupName: nd.cupName, winner: rem[0].name, rounds: rounds.length });
+    // Für den elimination-Embed: alle Match-Ergebnisse + noch aktive Spieler + Info zur nächsten Runde
+    const matchRows = newPairings.map((mp) => {
+      const a = players.find((x) => x.id === mp.player1Id);
+      const b = players.find((x) => x.id === mp.player2Id);
+      const wn = mp.winner === mp.player1Id ? a?.name : mp.winner === mp.player2Id ? b?.name : null;
+      return { p1: a?.name || "?", p2: b?.name || "?", s1: mp.score1, s2: mp.score2, winner: wn, tiebreak: mp.tiebreakMethod };
+    });
+    const nextScheduled = !fin ? (nd.schedule || []).find((x) => x.roundNumber === round.roundNumber + 1) : null;
+    postDiscord("elimination", {
+      cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
+      eliminated, matchResults: matchRows,
+      stillIn: rem.map((p) => p.name), stillInCount: rem.length,
+      nextRoundName: nextScheduled ? getRoundName(rem.length, round.roundNumber + 1) : null,
+      nextMatchday: nextScheduled ? nextScheduled.matchday : null,
+    });
+    if (fin && rem[0]) postDiscord("winner", {
+      cupName: nd.cupName, winner: rem[0].name, winnerLiga: rem[0].league || "",
+      rounds: rounds.length, totalPlayers: nd.players.length, matchday: round.matchday,
+    });
 
     // Coin-flip visual if any pairing used coinFlip
     const cfMatch = newPairings.find((p) => p.tiebreakMethod && p.tiebreakMethod.includes("Münzwurf"));
