@@ -95,12 +95,22 @@ export function Bracket({ data, gp, onMatchClick }) {
     e.currentTarget.releasePointerCapture?.(e.pointerId);
     setDrag(null);
   };
-  const onWheel = (e) => {
-    if (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaY) < 30) return;
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoom((z) => Math.max(0.3, Math.min(2.5, z * factor)));
-  };
+
+  // Wheel-Handler muss non-passive attached werden, damit preventDefault erlaubt ist.
+  // Nur mit Ctrl/Cmd (oder Pinch, Chrome setzt dann ctrlKey=true) eingreifen —
+  // normaler Scroll geht durch zur Seite, keine Warnings mehr.
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    const handler = (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      setZoom((z) => Math.max(0.3, Math.min(2.5, z * factor)));
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
 
   if (!rounds.length) {
     return (
@@ -126,7 +136,6 @@ export function Bracket({ data, gp, onMatchClick }) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
       >
         <div style={{ ...bk.canvas, width: layout.canvasW, height: layout.canvasH, transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}>
           <svg width={layout.canvasW} height={layout.canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
