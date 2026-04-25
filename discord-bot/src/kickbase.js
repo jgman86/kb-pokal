@@ -206,6 +206,71 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
 //   1. /teamcenter?dayNumber=X    → us[].lp (Player-IDs der Aufstellung) + us[].mdp (Total)
 //   2. /managers/{uid}/squad      → it[].pi/pn (Player-Namen + Positionen)
 //   3. /players/{pid}/performance → it[].ph[].p für genauen Tag (parallel × 11)
+// Stats für einen Manager über einen Zeitraum (lastN matchdays oder all).
+// Liefert: tageweise Punkte, Mittelwert, Stdabw, Min/Max, Team-Marktwert.
+export async function getManagerStats(leagueId, managerId, lastN = null) {
+  const [perf, squad] = await Promise.all([
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(managerId)}/performance`).catch(() => null),
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(managerId)}/squad`).catch(() => null),
+  ]);
+  const name = perf?.unm || "?";
+
+  // Aktuellste Saison = letzte im it[]-Array
+  const currentSeason = perf?.it?.[perf.it.length - 1];
+  const allDays = (currentSeason?.it || currentSeason?.ph || []).filter((p) => p.mdp != null && p.mdp >= 0);
+  // nur die mit echtem Datum berücksichtigen (vermeidet 0-mdp-Lücken)
+  const playedDays = allDays.filter((p) => p.mdp > 0 || (p.cur === false && p.md));
+  const period = lastN && lastN > 0 ? playedDays.slice(-lastN) : playedDays;
+
+  const points = period.map((p) => Number(p.mdp || 0));
+  const days = period.map((p) => Number(p.day));
+  const n = points.length;
+  const mean = n > 0 ? points.reduce((a, b) => a + b, 0) / n : 0;
+  const variance = n > 1 ? points.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : 0;
+  const sd = Math.sqrt(variance);
+  const min = n > 0 ? Math.min(...points) : 0;
+  const max = n > 0 ? Math.max(...points) : 0;
+  const minDay = n > 0 ? days[points.indexOf(min)] : null;
+  const maxDay = n > 0 ? days[points.indexOf(max)] : null;
+
+  // Team-Marktwert aus Squad — Summen über alle Spieler
+  const squadPlayers = squad?.it || [];
+  const teamValue = squadPlayers.reduce((a, p) => a + Number(p.mv || 0), 0);
+  const teamValueGainLoss = squadPlayers.reduce((a, p) => a + Number(p.mvgl || 0), 0);
+  const teamValueDailyDelta = squadPlayers.reduce((a, p) => a + Number(p.sdmvt || 0), 0);
+
+  return {
+    id: String(managerId), name,
+    days, points,
+    n, mean, sd, min, max, minDay, maxDay,
+    teamValue, teamValueGainLoss, teamValueDailyDelta,
+  };
+}
+
+export async function getLeagueStats(leagueId, lastN = null) {
+  const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
+  const managers = ((ranking && ranking.us) || []).map((m) => ({ id: String(m.i || ""), name: m.n || "?" })).filter((m) => m.id);
+
+  const stats = await Promise.all(managers.map((m) => getManagerStats(leagueId, m.id, lastN).catch(() => null)));
+  const valid = stats.filter((s) => s && s.n > 0);
+
+  if (valid.length === 0) return { managers: [], bestByMean: null, mostConsistent: null, biggestMatchday: null };
+
+  const byMean = [...valid].sort((a, b) => b.mean - a.mean);
+  const byConsistency = [...valid].sort((a, b) => a.sd - b.sd);
+  const byMax = [...valid].sort((a, b) => b.max - a.max);
+  const byTeamValue = [...valid].sort((a, b) => b.teamValue - a.teamValue);
+
+  return {
+    managers: valid,
+    bestByMean: byMean[0],
+    mostConsistent: byConsistency[0],
+    biggestMatchday: byMax[0],
+    biggestTeam: byTeamValue[0],
+    leagueMean: valid.reduce((a, s) => a + s.mean, 0) / valid.length,
+  };
+}
+
 export async function getLineup(leagueId, userId, dayNumber) {
   const day = Number(dayNumber);
 

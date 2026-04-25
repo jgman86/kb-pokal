@@ -173,6 +173,121 @@ export function errorEmbed(message) {
     .setTimestamp(new Date());
 }
 
+// QuickChart.io: Linechart als URL — Discord rendert das als Embed-Bild
+function chartUrl(config, w = 700, h = 320) {
+  const json = JSON.stringify(config);
+  return `https://quickchart.io/chart?bkg=transparent&w=${w}&h=${h}&c=${encodeURIComponent(json)}`;
+}
+
+const fmtMoney = (v) => {
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)} M€`;
+  if (abs >= 1e3) return `${(v / 1e3).toFixed(0)} k€`;
+  return `${v} €`;
+};
+const signMoney = (v) => (v >= 0 ? `+${fmtMoney(v)}` : fmtMoney(v));
+
+export function statsEmbed(leagueName, period, stats) {
+  if (!stats || stats.n === 0) {
+    return new EmbedBuilder()
+      .setTitle(`📊 Stats — ${stats?.name || "?"}`)
+      .setDescription(`_Keine Datenpunkte im gewählten Zeitraum._`)
+      .setColor(0x94a3b8);
+  }
+  const periodLabel = period ? `Letzte ${period} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})` : `Alle ${stats.n} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})`;
+
+  const chart = chartUrl({
+    type: "line",
+    data: {
+      labels: stats.days.map((d) => `ST ${d}`),
+      datasets: [{
+        label: `${stats.name} — Punkte`,
+        data: stats.points,
+        borderColor: "rgb(0,230,118)",
+        backgroundColor: "rgba(0,230,118,.18)",
+        fill: true,
+        tension: 0.25,
+        pointRadius: 3,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.15)" } },
+        x: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.08)" } },
+      },
+    },
+  });
+
+  return new EmbedBuilder()
+    .setTitle(`📊 ${stats.name} — ${leagueName}`)
+    .setDescription(`_${periodLabel}_`)
+    .addFields(
+      { name: "Ø Punkte", value: `**${stats.mean.toFixed(1)}** ± ${stats.sd.toFixed(1)}`, inline: true },
+      { name: "Range", value: `${stats.min} – ${stats.max}`, inline: true },
+      { name: "Bester Spieltag", value: `ST ${stats.maxDay}: **${stats.max}**`, inline: true },
+      { name: "Schlechtester", value: `ST ${stats.minDay}: ${stats.min}`, inline: true },
+      { name: "Team-Marktwert", value: fmtMoney(stats.teamValue), inline: true },
+      { name: "Saison-Δ", value: signMoney(stats.teamValueGainLoss), inline: true },
+    )
+    .setImage(chart)
+    .setColor(0x00e676)
+    .setTimestamp(new Date())
+    .setFooter({ text: `${leagueName} · n=${stats.n} · 24h: ${signMoney(stats.teamValueDailyDelta)}` });
+}
+
+export function leagueStatsEmbed(leagueName, period, league) {
+  if (!league.managers.length) {
+    return new EmbedBuilder().setTitle(`📊 Stats — ${leagueName}`).setDescription(`_Keine Daten._`).setColor(0x94a3b8);
+  }
+  const periodLabel = period ? `Letzte ${period} Spieltage` : `Alle verfügbaren Spieltage`;
+  const top5 = [...league.managers].sort((a, b) => b.mean - a.mean).slice(0, 5);
+  const colors = ["rgb(0,230,118)", "rgb(255,209,0)", "rgb(68,138,255)", "rgb(255,64,129)", "rgb(255,145,0)"];
+
+  // Multi-Line Chart: alle Top-5 über die Zeit
+  const allDays = top5[0]?.days || [];
+  const chart = chartUrl({
+    type: "line",
+    data: {
+      labels: allDays.map((d) => `ST ${d}`),
+      datasets: top5.map((s, i) => ({
+        label: s.name,
+        data: s.points,
+        borderColor: colors[i],
+        backgroundColor: "transparent",
+        fill: false,
+        tension: 0.25,
+        pointRadius: 2,
+        borderWidth: 2,
+      })),
+    },
+    options: {
+      plugins: { legend: { labels: { color: "#cbd5e1" } } },
+      scales: {
+        y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.15)" } },
+        x: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.08)" } },
+      },
+    },
+  }, 800, 360);
+
+  const lines = [
+    `🥇 **Bester (Ø Punkte)**: ${league.bestByMean.name} — ${league.bestByMean.mean.toFixed(1)} ± ${league.bestByMean.sd.toFixed(1)}`,
+    `🎯 **Konstantester** (kleinste σ): ${league.mostConsistent.name} — ± ${league.mostConsistent.sd.toFixed(1)}`,
+    `💥 **Höchster Einzel-Spieltag**: ${league.biggestMatchday.name} — ${league.biggestMatchday.max} Pkt (ST ${league.biggestMatchday.maxDay})`,
+    `💰 **Größter Team-Marktwert**: ${league.biggestTeam.name} — ${fmtMoney(league.biggestTeam.teamValue)}`,
+    `📈 **Liga-Durchschnitt**: ${league.leagueMean.toFixed(1)} Pkt`,
+  ];
+
+  return new EmbedBuilder()
+    .setTitle(`📊 Liga-Stats — ${leagueName}`)
+    .setDescription(`_${periodLabel}_\n\n${lines.join("\n")}`)
+    .setImage(chart)
+    .setColor(0x00e676)
+    .setTimestamp(new Date())
+    .setFooter({ text: `${league.managers.length} Manager · Top 5 im Chart` });
+}
+
 export function helpEmbed() {
   return new EmbedBuilder()
     .setTitle("🤖 Kickbase-Bot — Befehle")
@@ -183,6 +298,7 @@ export function helpEmbed() {
         "**/matchday** `<league> [day]` — Punkte eines Spieltags (Default: aktueller)",
         "**/points** `<league> <user>` — Saison- + Spieltagspunkte eines Managers",
         "**/lineup** `<league> <user> [day]` — 11er-Aufstellung mit Einzelpunkten",
+        "**/stats** `<league> [user] [last]` — Stats über Zeitraum mit Linechart (ohne user → Liga-Übersicht)",
         "**/run-schedule** `<job>` — _(Admin)_ Geplanten Job sofort ausführen",
         "**/help** — Diese Übersicht",
         "",

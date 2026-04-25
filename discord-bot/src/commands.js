@@ -6,7 +6,7 @@
 
 import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
 import * as kb from "./kickbase.js";
-import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, errorEmbed, helpEmbed } from "./format.js";
+import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, statsEmbed, leagueStatsEmbed, errorEmbed, helpEmbed } from "./format.js";
 import { runJob } from "./scheduler.js";
 
 // Memo: Member-Listen pro Liga (für Autocomplete)
@@ -68,6 +68,14 @@ export function buildCommands(config) {
       )
       .addStringOption((o) => o.setName("user").setDescription("Manager (Autocomplete nach Liga-Wahl)").setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
+    new SlashCommandBuilder()
+      .setName("stats")
+      .setDescription("Stats-Übersicht (Ø Punkte, σ, Marktwert, Linechart)")
+      .addStringOption((o) =>
+        o.setName("league").setDescription("Liga auswählen").setRequired(true).addChoices(...leagueChoices),
+      )
+      .addStringOption((o) => o.setName("user").setDescription("Manager (optional, sonst Liga-Übersicht)").setAutocomplete(true))
+      .addIntegerOption((o) => o.setName("last").setDescription("Letzte N Spieltage (Default: alle)").setMinValue(1).setMaxValue(34)),
     new SlashCommandBuilder()
       .setName("run-schedule")
       .setDescription("Einen geplanten Job sofort ausführen (Admin)")
@@ -135,6 +143,20 @@ export async function handleCommand(interaction, config) {
         dayPoints = md.find((r) => r.id === user.id)?.points ?? null;
       }
       return interaction.editReply({ embeds: [pointsEmbed(league.name, user, inStanding?.points ?? null, day, dayPoints)] });
+    }
+
+    if (commandName === "stats") {
+      const last = interaction.options.getInteger("last") || null;
+      const userIdOrName = interaction.options.getString("user");
+      if (!userIdOrName) {
+        const league_stats = await kb.getLeagueStats(league.id, last);
+        return interaction.editReply({ embeds: [leagueStatsEmbed(league.name, last, league_stats)] });
+      }
+      const members = await membersOf(league.id);
+      const user = members.find((m) => m.id === userIdOrName) || members.find((m) => m.name.toLowerCase() === userIdOrName.toLowerCase());
+      if (!user) return interaction.editReply({ embeds: [errorEmbed(`Manager "${userIdOrName}" in ${league.name} nicht gefunden`)] });
+      const stats = await kb.getManagerStats(league.id, user.id, last);
+      return interaction.editReply({ embeds: [statsEmbed(league.name, last, stats)] });
     }
 
     if (commandName === "lineup") {
