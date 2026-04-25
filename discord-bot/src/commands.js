@@ -35,35 +35,38 @@ function resolveLeague(config, optionValue) {
 export function buildCommands(config) {
   const leagueChoices = config.leagues.slice(0, 25).map((l) => ({ name: l.name, value: l.id }));
 
+  // Konvention: league immer als erster Parameter und required, dann user/day.
+  // So weiß das Autocomplete für `user` sofort welche Liga gemeint ist und
+  // die Reihenfolge im Discord-UI ist konsistent.
   return [
     new SlashCommandBuilder()
       .setName("standings")
       .setDescription("Saison-Tabelle einer Liga anzeigen")
       .addStringOption((o) =>
-        o.setName("league").setDescription("Liga (Default: erste konfigurierte)").addChoices(...leagueChoices),
+        o.setName("league").setDescription("Liga auswählen").setRequired(true).addChoices(...leagueChoices),
       ),
     new SlashCommandBuilder()
       .setName("matchday")
       .setDescription("Punkte eines Spieltags anzeigen")
-      .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34))
       .addStringOption((o) =>
-        o.setName("league").setDescription("Liga (Default: erste konfigurierte)").addChoices(...leagueChoices),
-      ),
+        o.setName("league").setDescription("Liga auswählen").setRequired(true).addChoices(...leagueChoices),
+      )
+      .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
     new SlashCommandBuilder()
       .setName("points")
       .setDescription("Punkte eines Managers anzeigen")
-      .addStringOption((o) => o.setName("user").setDescription("Manager-Name (Autocomplete)").setRequired(true).setAutocomplete(true))
       .addStringOption((o) =>
-        o.setName("league").setDescription("Liga").addChoices(...leagueChoices),
-      ),
+        o.setName("league").setDescription("Liga auswählen").setRequired(true).addChoices(...leagueChoices),
+      )
+      .addStringOption((o) => o.setName("user").setDescription("Manager (Autocomplete nach Liga-Wahl)").setRequired(true).setAutocomplete(true)),
     new SlashCommandBuilder()
       .setName("lineup")
       .setDescription("Aufstellung eines Managers an einem Spieltag")
-      .addStringOption((o) => o.setName("user").setDescription("Manager-Name (Autocomplete)").setRequired(true).setAutocomplete(true))
-      .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34))
       .addStringOption((o) =>
-        o.setName("league").setDescription("Liga").addChoices(...leagueChoices),
-      ),
+        o.setName("league").setDescription("Liga auswählen").setRequired(true).addChoices(...leagueChoices),
+      )
+      .addStringOption((o) => o.setName("user").setDescription("Manager (Autocomplete nach Liga-Wahl)").setRequired(true).setAutocomplete(true))
+      .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
     new SlashCommandBuilder().setName("help").setDescription("Bot-Befehle anzeigen"),
   ].map((c) => c.toJSON());
 }

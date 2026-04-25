@@ -143,12 +143,13 @@ export function helpEmbed() {
     .setColor(0x94a3b8)
     .setDescription(
       [
-        "**/standings** `[league]` — Saison-Tabelle einer Liga (Default: erste konfigurierte Liga)",
-        "**/matchday** `[day] [league]` — Punkte eines Spieltags (Default: aktueller Spieltag)",
-        "**/points** `<user> [league]` — Punkte eines bestimmten Managers",
-        "**/lineup** `<user> [day] [league]` — Aufstellung eines Managers an einem Spieltag",
+        "**/standings** `<league>` — Saison-Tabelle einer Liga",
+        "**/matchday** `<league> [day]` — Punkte eines Spieltags (Default: aktueller)",
+        "**/points** `<league> <user>` — Saison- + Spieltagspunkte eines Managers",
+        "**/lineup** `<league> <user> [day]` — 11er-Aufstellung mit Einzelpunkten",
         "**/help** — Diese Übersicht",
         "",
+        "_Reihenfolge: zuerst Liga wählen, dann User. So weiß das Autocomplete welche Mitglieder es vorschlagen soll._",
         "_Geplante Posts laufen automatisch laut config.json — Cron-basiert._",
       ].join("\n"),
     );
