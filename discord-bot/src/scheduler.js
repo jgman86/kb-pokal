@@ -32,9 +32,10 @@ async function runJob(client, sched, league) {
   if (!channel || !channel.isTextBased()) throw new Error(`Channel ${league.channelId} nicht erreichbar oder kein Text-Channel`);
 
   try {
+    const opts = { relegationCount: league.relegationCount, promotionCount: league.promotionCount };
     if (sched.task === "standings") {
       const rows = await kb.getStandings(league.id);
-      await channel.send({ embeds: [standingsEmbed(league.name, rows)] });
+      await channel.send({ embeds: [standingsEmbed(league.name, rows, opts)] });
       return;
     }
     if (sched.task === "matchday") {
@@ -45,7 +46,7 @@ async function runJob(client, sched, league) {
         if (day < 1) day = 1;
       }
       const rows = await kb.getMatchdayPoints(league.id, day);
-      await channel.send({ embeds: [matchdayEmbed(league.name, day, rows)] });
+      await channel.send({ embeds: [matchdayEmbed(league.name, day, rows, opts)] });
       return;
     }
     throw new Error(`Unbekannter Task: ${sched.task}`);

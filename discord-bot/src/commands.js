@@ -88,14 +88,14 @@ export async function handleCommand(interaction, config) {
 
     if (commandName === "standings") {
       const rows = await kb.getStandings(league.id);
-      return interaction.editReply({ embeds: [standingsEmbed(league.name, rows)] });
+      return interaction.editReply({ embeds: [standingsEmbed(league.name, rows, { relegationCount: league.relegationCount, promotionCount: league.promotionCount })] });
     }
 
     if (commandName === "matchday") {
       let day = interaction.options.getInteger("day");
       if (day == null) day = (await kb.getCurrentMatchday()) ?? 1;
       const rows = await kb.getMatchdayPoints(league.id, day);
-      return interaction.editReply({ embeds: [matchdayEmbed(league.name, day, rows)] });
+      return interaction.editReply({ embeds: [matchdayEmbed(league.name, day, rows, { relegationCount: league.relegationCount, promotionCount: league.promotionCount })] });
     }
 
     if (commandName === "points") {
