@@ -111,26 +111,46 @@ export async function getStandings(leagueId) {
 }
 
 export async function getMatchdayPoints(leagueId, dayNumber) {
-  const raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking?dayNumber=${encodeURIComponent(dayNumber)}`);
-  const arr = raw.us || [];
-  const rows = arr.map((m) => ({
+  const day = Number(dayNumber);
+
+  // 1. Manager-Liste von /ranking (ohne dayNumber, das wäre nur die Saison-Tabelle)
+  const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
+  const managers = (ranking.us || []).map((m) => ({
     id: String(m.i || ""),
     name: m.n || "?",
-    points: Number(m.mdp || 0),
-    seasonPoints: Number(m.sp || 0),
     image: m.uim || "",
   })).filter((m) => m.id);
 
-  // Diagnose: wenn API meldet "day: X" und wir hatten Y angefragt → loggen
-  if (raw.day != null && Number(raw.day) !== Number(dayNumber)) {
-    console.warn(`[KB] /ranking?dayNumber=${dayNumber} → API antwortete mit day=${raw.day}. Womöglich liegt der angefragte Spieltag in der Zukunft oder Kickbase serviert noch keinen Stand dafür.`);
+  if (managers.length === 0) {
+    return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0 } });
   }
-  // Diagnose: alle mdp = 0 ist verdächtig
+
+  // 2. Pro Manager /performance abfragen — dort sind die echten Spieltag-für-Spieltag mdp
+  const perfPromises = managers.map((m) =>
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(m.id)}/performance`).catch(() => null),
+  );
+  const perfs = await Promise.all(perfPromises);
+
+  // 3. Pro Manager den angefragten Tag in der jüngsten Saison finden
+  function pointsForDay(perf) {
+    if (!perf || !Array.isArray(perf.it)) return 0;
+    let bestDate = "", bestPoints = 0;
+    for (const season of perf.it) {
+      for (const ph of season.it || []) {
+        if (Number(ph.day) !== day) continue;
+        const md = ph.md || "";
+        if (md > bestDate) { bestDate = md; bestPoints = Number(ph.mdp || 0); }
+      }
+    }
+    return bestPoints;
+  }
+
+  const rows = managers.map((m, i) => ({ ...m, points: pointsForDay(perfs[i]) }));
   const nonZero = rows.filter((r) => r.points > 0).length;
   if (rows.length > 0 && nonZero === 0) {
-    console.warn(`[KB] /ranking?dayNumber=${dayNumber}: ${rows.length} Manager, alle mit mdp=0. Spieltag noch nicht geschlossen?`);
+    console.warn(`[KB] day=${day}: ${rows.length} Manager, alle mdp=0 nach /performance-Lookup. Spieltag wirklich nicht gespielt oder zukünftig?`);
   }
-  return Object.assign(rankByPoints(rows), { _meta: { apiDay: raw.day, requestedDay: Number(dayNumber), nonZero, total: rows.length } });
+  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero } });
 }
 
 // Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel
