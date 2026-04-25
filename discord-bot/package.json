@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/bot.js",
     "dev": "node --watch src/bot.js",
-    "deploy-commands": "node src/deploy-commands.js"
+    "deploy-commands": "node src/deploy-commands.js",
+    "leagues": "node src/list-leagues.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
