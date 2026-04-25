@@ -117,16 +117,24 @@ export async function getStandings(leagueId) {
 export async function getMatchdayPoints(leagueId, dayNumber) {
   const day = Number(dayNumber);
 
-  // 1. Manager-Liste + irgendeine User-ID für die teamcenter-Path
-  const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`).catch(() => null);
+  // 1. Liga-Info + Manager-Liste parallel
+  const [leagueInfo, ranking] = await Promise.all([
+    getLeagueInfo(leagueId),
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`).catch(() => null),
+  ]);
   const managers = ((ranking && ranking.us) || []).map((m) => ({
     id: String(m.i || ""),
     name: m.n || "?",
     image: m.uim || "",
   })).filter((m) => m.id);
 
+  // Sofort-Abbruch wenn Tag vor Liga-Erstellung
+  if (leagueInfo.startMatchday && day < leagueInfo.startMatchday) {
+    return Object.assign([], { _meta: { source: "before-league-creation", requestedDay: day, total: 0, nonZero: 0, leagueStartMatchday: leagueInfo.startMatchday } });
+  }
+
   if (managers.length === 0) {
-    return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0 } });
+    return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0, leagueStartMatchday: leagueInfo.startMatchday } });
   }
 
   // ─── Strategie A: /teamcenter?dayNumber=X
@@ -190,7 +198,7 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
     }
   }
 
-  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures, earliestAccessibleDay } });
+  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures, earliestAccessibleDay, leagueStartMatchday: leagueInfo.startMatchday } });
 }
 
 // Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel
@@ -252,7 +260,6 @@ export async function getLineup(leagueId, userId, dayNumber) {
 }
 
 export async function getCurrentMatchday() {
-  // /ranking-Response enthält "day"-Feld als Top-Level (siehe Doku-Sample)
   try {
     const leagues = await listLeagues();
     if (!leagues[0]) return null;
@@ -260,4 +267,27 @@ export async function getCurrentMatchday() {
     if (r?.day) return Number(r.day);
   } catch {}
   return null;
+}
+
+// Liga-Metadaten incl. Start-Spieltag (mppu = matchday-pickup, Spieltag an
+// dem die Liga erstellt wurde). Vor diesem Tag existiert keine Punkte-Historie
+// in der Liga — auch nicht für Manager, die bei Bundesliga-Saisonbeginn dabei waren.
+const leagueInfoCache = new Map();
+const LEAGUE_INFO_TTL = 60 * 60 * 1000; // 1h
+
+export async function getLeagueInfo(leagueId) {
+  const cached = leagueInfoCache.get(leagueId);
+  if (cached && Date.now() - cached.ts < LEAGUE_INFO_TTL) return cached.data;
+  try {
+    const me = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/me`);
+    const info = {
+      startMatchday: Number(me.mppu) || null,  // Liga-Erstellungs-Spieltag
+      leagueName: me.lnm || "",
+    };
+    leagueInfoCache.set(leagueId, { ts: Date.now(), data: info });
+    return info;
+  } catch (e) {
+    console.warn(`[KB] /me ${leagueId} failed: ${e.message}`);
+    return { startMatchday: null, leagueName: "" };
+  }
 }

@@ -92,15 +92,17 @@ export function matchdayEmbed(leagueName, day, rows, opts = {}) {
   const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
   const meta = rows._meta || {};
 
-  // Tag liegt vor dem ersten verfügbaren Spieltag der Liga
-  // (Liga vielleicht später erstellt, später aktiviert, oder Account-Permissions)
-  if (meta.total > 0 && meta.nonZero === 0 && meta.earliestAccessibleDay && day < meta.earliestAccessibleDay) {
+  // Tag liegt vor Liga-Erstellung — die Liga existierte da noch nicht
+  const startMd = meta.leagueStartMatchday || meta.earliestAccessibleDay;
+  if (startMd && day < startMd) {
+    const reason = meta.leagueStartMatchday
+      ? `Diese Liga wurde an **Spieltag ${meta.leagueStartMatchday}** erstellt — frühere Spieltage existieren in dieser Liga nicht.`
+      : `Frühester verfügbarer Spieltag in dieser Liga: **${meta.earliestAccessibleDay}**.`;
     return new EmbedBuilder()
       .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
       .setDescription(
-        `⚠️ **Keine Daten für Spieltag ${day}**\n\n` +
-        `Frühester verfügbarer Spieltag in dieser Liga: **${meta.earliestAccessibleDay}**.\n` +
-        `_Verfügbarer Bereich: Spieltag ${meta.earliestAccessibleDay} bis aktuell._`
+        `⚠️ **Keine Daten für Spieltag ${day}**\n\n${reason}\n\n` +
+        `_Verfügbarer Bereich: Spieltag ${startMd} bis aktuell._`
       )
       .setColor(0xff9100)
       .setTimestamp(new Date())
