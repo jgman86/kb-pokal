@@ -149,12 +149,9 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
   }
 
   // ─── Strategie B: /managers/{id}/performance (Fan-out)
-  // Mit detailliertem Error-Logging, damit wir merken warum es ggf. leer kommt.
   let perfFailures = 0;
-  let perfSampleStructure = null;
   const perfPromises = managers.map((m) =>
     get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(m.id)}/performance`)
-      .then((r) => { if (!perfSampleStructure && r) perfSampleStructure = Object.keys(r).slice(0, 8); return r; })
       .catch((e) => { perfFailures++; if (perfFailures === 1) console.warn(`[KB] /performance ${m.id} failed: ${e.message}`); return null; }),
   );
   const perfs = await Promise.all(perfPromises);
@@ -174,8 +171,19 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
 
   const rows = managers.map((m, i) => ({ ...m, points: pointsForDay(perfs[i]) }));
   const nonZero = rows.filter((r) => r.points > 0).length;
+
+  // Wenn alles 0 ist → tiefer graben und Roh-Struktur des ersten Managers loggen
   if (rows.length > 0 && nonZero === 0) {
-    console.warn(`[KB] /performance day=${day}: ${rows.length} Manager, alle mdp=0. Failures=${perfFailures}, sample-keys=${JSON.stringify(perfSampleStructure)}`);
+    const sample = perfs.find((p) => p && Array.isArray(p.it));
+    if (sample) {
+      const seasonSummaries = sample.it.map((s) => {
+        const days = (s.it || s.ph || []).map((ph) => `${ph.day}:${ph.mdp ?? ph.p ?? "?"}`);
+        return `[${s.sn || s.sid || "?"}] (${days.length} days) ${days.slice(0, 5).join(", ")}${days.length > 5 ? ` ... ${days.slice(-3).join(", ")}` : ""}`;
+      });
+      console.warn(`[KB] day=${day}: alle mdp=0. Erster Manager hat ${sample.it.length} Saisons:\n  - ${seasonSummaries.join("\n  - ")}`);
+    } else {
+      console.warn(`[KB] day=${day}: alle mdp=0 und keiner der ${rows.length} Manager hat eine parseable it[]. Failures=${perfFailures}, first response keys: ${perfs[0] ? JSON.stringify(Object.keys(perfs[0])) : "null"}`);
+    }
   }
   return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures } });
 }
