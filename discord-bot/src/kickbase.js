@@ -116,10 +116,21 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
   const rows = arr.map((m) => ({
     id: String(m.i || ""),
     name: m.n || "?",
-    points: Number(m.mdp || 0),  // <-- mdp ist Matchday-Punkte, nicht sp!
+    points: Number(m.mdp || 0),
+    seasonPoints: Number(m.sp || 0),
     image: m.uim || "",
   })).filter((m) => m.id);
-  return rankByPoints(rows);
+
+  // Diagnose: wenn API meldet "day: X" und wir hatten Y angefragt → loggen
+  if (raw.day != null && Number(raw.day) !== Number(dayNumber)) {
+    console.warn(`[KB] /ranking?dayNumber=${dayNumber} → API antwortete mit day=${raw.day}. Womöglich liegt der angefragte Spieltag in der Zukunft oder Kickbase serviert noch keinen Stand dafür.`);
+  }
+  // Diagnose: alle mdp = 0 ist verdächtig
+  const nonZero = rows.filter((r) => r.points > 0).length;
+  if (rows.length > 0 && nonZero === 0) {
+    console.warn(`[KB] /ranking?dayNumber=${dayNumber}: ${rows.length} Manager, alle mit mdp=0. Spieltag noch nicht geschlossen?`);
+  }
+  return Object.assign(rankByPoints(rows), { _meta: { apiDay: raw.day, requestedDay: Number(dayNumber), nonZero, total: rows.length } });
 }
 
 // Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel

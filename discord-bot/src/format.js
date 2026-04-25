@@ -90,12 +90,21 @@ export function matchdayEmbed(leagueName, day, rows, opts = {}) {
   const { relegationCount = DEFAULT_BOT_N, promotionCount = DEFAULT_TOP_N, titleHolder } = opts;
   const top25 = rows.slice(0, 25);
   const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
+  const meta = rows._meta || {};
+  const warnLines = [];
+  if (meta.apiDay != null && Number(meta.apiDay) !== Number(day)) {
+    warnLines.push(`⚠️ Kickbase antwortete mit Spieltag ${meta.apiDay} statt ${day} — evtl. noch nicht freigeschaltet.`);
+  }
+  if (meta.total > 0 && meta.nonZero === 0) {
+    warnLines.push(`⚠️ Alle Manager 0 Punkte — Spieltag wahrscheinlich noch nicht abgeschlossen.`);
+  }
+  const warnBlock = warnLines.length ? `\n${warnLines.join("\n")}\n` : "";
   return new EmbedBuilder()
     .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
-    .setDescription(`${legendLines(top25, { ...tableOpts, isMatchday: true })}\n\n${tableBlock(top25, tableOpts)}`)
+    .setDescription(`${legendLines(top25, { ...tableOpts, isMatchday: true })}${warnBlock}\n\n${tableBlock(top25, tableOpts)}`)
     .setColor(COLORS.matchday)
     .setTimestamp(new Date())
-    .setFooter({ text: `${rows.length} Manager` });
+    .setFooter({ text: `${rows.length} Manager${meta.apiDay != null ? ` · API-day ${meta.apiDay}` : ""}` });
 }
 
 export function pointsEmbed(leagueName, user, totalPoints, day, dayPoints) {
