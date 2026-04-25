@@ -26,10 +26,15 @@ import * as kb from "./kickbase.js";
     console.log(`  ${"-".repeat(idW)}  ${"-".repeat(nameW)}`);
     leagues.forEach((l) => console.log(`  ${String(l.id).padEnd(idW)}  ${l.name.padEnd(nameW)}`));
 
-    console.log("\n💡 Snippet für config.json:\n");
-    const snippet = leagues.map((l) => `    { "id": "${l.id}", "name": ${JSON.stringify(l.name)}, "channelId": "REPLACE_WITH_DISCORD_CHANNEL_ID" }`).join(",\n");
-    console.log(`  "leagues": [\n${snippet}\n  ]`);
-    console.log("");
+    console.log("\n💡 Komplettes config.json (copy-paste-ready):\n");
+    const cfg = {
+      leagues: leagues.map((l) => ({ id: l.id, name: l.name, channelId: "REPLACE_WITH_DISCORD_CHANNEL_ID" })),
+      schedules: [
+        { name: "Wochenstand", cron: "0 21 * * 1", leagueId: leagues[0].id, task: "standings", tz: "Europe/Berlin" },
+      ],
+    };
+    console.log(JSON.stringify(cfg, null, 2));
+    console.log("\n→ In config.json speichern, dann channelId-Platzhalter durch echte Discord-Channel-IDs ersetzen.");
   } catch (e) {
     console.error("✗ Fehler:", e.message);
     process.exit(1);
