@@ -159,6 +159,7 @@ export function helpEmbed() {
         "**/matchday** `<league> [day]` — Punkte eines Spieltags (Default: aktueller)",
         "**/points** `<league> <user>` — Saison- + Spieltagspunkte eines Managers",
         "**/lineup** `<league> <user> [day]` — 11er-Aufstellung mit Einzelpunkten",
+        "**/run-schedule** `<job>` — _(Admin)_ Geplanten Job sofort ausführen",
         "**/help** — Diese Übersicht",
         "",
         "_Reihenfolge: zuerst Liga wählen, dann User. So weiß das Autocomplete welche Mitglieder es vorschlagen soll._",

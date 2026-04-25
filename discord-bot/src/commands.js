@@ -4,9 +4,10 @@
 //   - autocomplete (optional): Reagiert auf Tipp-Vorschläge
 //   - execute: Reagiert auf Command-Ausführung
 
-import { SlashCommandBuilder } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
 import * as kb from "./kickbase.js";
 import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, errorEmbed, helpEmbed } from "./format.js";
+import { runJob } from "./scheduler.js";
 
 // Memo: Member-Listen pro Liga (für Autocomplete)
 const memberCache = new Map(); // leagueId → { ts, members }
@@ -67,6 +68,11 @@ export function buildCommands(config) {
       )
       .addStringOption((o) => o.setName("user").setDescription("Manager (Autocomplete nach Liga-Wahl)").setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
+    new SlashCommandBuilder()
+      .setName("run-schedule")
+      .setDescription("Einen geplanten Job sofort ausführen (Admin)")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addStringOption((o) => o.setName("job").setDescription("Schedule-Name aus config.json").setRequired(true).setAutocomplete(true)),
     new SlashCommandBuilder().setName("help").setDescription("Bot-Befehle anzeigen"),
   ].map((c) => c.toJSON());
 }
@@ -78,6 +84,21 @@ export async function handleCommand(interaction, config) {
 
   if (commandName === "help") {
     return interaction.reply({ embeds: [helpEmbed()], ephemeral: true });
+  }
+
+  if (commandName === "run-schedule") {
+    await interaction.deferReply({ ephemeral: true });
+    const name = interaction.options.getString("job", true);
+    const sched = (config.schedules || []).find((s) => s.name === name);
+    if (!sched) return interaction.editReply({ embeds: [errorEmbed(`Schedule "${name}" nicht gefunden.`)] });
+    const league = config.leagues.find((l) => l.id === sched.leagueId);
+    if (!league) return interaction.editReply({ embeds: [errorEmbed(`Liga ${sched.leagueId} aus Schedule "${name}" nicht in config.`)] });
+    try {
+      await runJob(interaction.client, sched, league);
+      return interaction.editReply(`✓ Job "${name}" ausgeführt — Embed liegt in <#${league.channelId}>.`);
+    } catch (e) {
+      return interaction.editReply({ embeds: [errorEmbed(`Job "${name}" failed: ${e.message}`)] });
+    }
   }
 
   await interaction.deferReply();
@@ -137,6 +158,16 @@ export async function handleCommand(interaction, config) {
 export async function handleAutocomplete(interaction, config) {
   try {
     const focused = interaction.options.getFocused(true);
+
+    if (focused.name === "job") {
+      const q = focused.value.toLowerCase();
+      const matches = (config.schedules || [])
+        .filter((s) => s.name.toLowerCase().includes(q))
+        .slice(0, 25)
+        .map((s) => ({ name: s.name, value: s.name }));
+      return interaction.respond(matches);
+    }
+
     if (focused.name !== "user") return interaction.respond([]);
     const leagueOpt = interaction.options.getString("league");
     const league = resolveLeague(config, leagueOpt);

@@ -26,7 +26,7 @@ export function startSchedules(client, config) {
   return jobs;
 }
 
-async function runJob(client, sched, league) {
+export async function runJob(client, sched, league) {
   console.log(`[Scheduler] ▶  ${sched.name} läuft...`);
   const channel = await client.channels.fetch(league.channelId);
   if (!channel || !channel.isTextBased()) throw new Error(`Channel ${league.channelId} nicht erreichbar oder kein Text-Channel`);
