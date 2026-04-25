@@ -131,19 +131,19 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
 
   // ─── Strategie A: /teamcenter?dayNumber=X
   // Liefert (laut Doku) alle Manager der Liga mit ihren mdp für den Tag.
+  // Wir akzeptieren das Ergebnis nur, wenn auch wirklich Punkte > 0 dabei sind —
+  // sonst weiter zu Strategie B (mehr Diagnose-Output).
   const tc = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/users/${encodeURIComponent(managers[0].id)}/teamcenter?dayNumber=${day}`).catch((e) => ({ __error: e.message }));
   if (tc && !tc.__error && Array.isArray(tc.us)) {
     const byId = new Map();
     for (const u of tc.us) byId.set(String(u.i || ""), { name: u.unm || u.n, mdp: Number(u.mdp || 0) });
-    const rows = managers.map((m) => {
-      const tcEntry = byId.get(m.id);
-      return { ...m, points: tcEntry?.mdp ?? 0 };
-    });
+    const rows = managers.map((m) => ({ ...m, points: byId.get(m.id)?.mdp ?? 0 }));
     const nonZero = rows.filter((r) => r.points > 0).length;
-    if (nonZero > 0 || rows.length > 0) {
-      if (nonZero === 0) console.warn(`[KB] teamcenter day=${day}: alle mdp=0 (vermutlich zukünftig).`);
+    console.log(`[KB] teamcenter day=${day}: ${tc.us.length} Einträge, ${nonZero}/${rows.length} mit Punkten > 0`);
+    if (nonZero > 0) {
       return Object.assign(rankByPoints(rows), { _meta: { source: "teamcenter", requestedDay: day, total: rows.length, nonZero, tcCount: tc.us.length } });
     }
+    console.warn(`[KB] teamcenter day=${day}: alle 0, probiere /performance...`);
   } else if (tc?.__error) {
     console.warn(`[KB] /teamcenter day=${day} failed: ${tc.__error}. Fallback zu /performance...`);
   }
