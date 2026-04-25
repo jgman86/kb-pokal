@@ -173,10 +173,28 @@ export function errorEmbed(message) {
     .setTimestamp(new Date());
 }
 
-// QuickChart.io: Linechart als URL — Discord rendert das als Embed-Bild
-function chartUrl(config, w = 700, h = 320) {
+// QuickChart.io: kurzer GET-URL bei kleinen Configs, Short-URL via POST bei großen.
+// Discord-Limit für embed.image.url ist 2048 Zeichen.
+const QC_URL_LIMIT = 2000; // Sicherheitspuffer unter 2048
+async function chartUrl(config, w = 700, h = 320) {
   const json = JSON.stringify(config);
-  return `https://quickchart.io/chart?bkg=transparent&w=${w}&h=${h}&c=${encodeURIComponent(json)}`;
+  const direct = `https://quickchart.io/chart?bkg=transparent&w=${w}&h=${h}&c=${encodeURIComponent(json)}`;
+  if (direct.length <= QC_URL_LIMIT) return direct;
+
+  // Zu lang → POST an /chart/create, kriege Short-URL zurück
+  try {
+    const r = await fetch("https://quickchart.io/chart/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chart: config, width: w, height: h, backgroundColor: "transparent" }),
+    });
+    const j = await r.json();
+    if (j?.success && j.url) return j.url;
+    console.warn("[QuickChart] POST returned non-success:", j);
+  } catch (e) {
+    console.warn("[QuickChart] POST failed:", e.message);
+  }
+  return null; // Embed wird ohne Bild gerendert
 }
 
 const fmtMoney = (v) => {
@@ -188,7 +206,7 @@ const fmtMoney = (v) => {
 const signMoney = (v) => (v >= 0 ? `+${fmtMoney(v)}` : fmtMoney(v));
 
 // Punkte-Chart (gefüllte Linie)
-function pointsChart(stats) {
+async function pointsChart(stats) {
   return chartUrl({
     type: "line",
     data: {
@@ -215,14 +233,13 @@ function pointsChart(stats) {
 }
 
 // Marktwert-Chart (Team-MV über Zeit)
-function mvChart(stats, mvHistory) {
+async function mvChart(stats, mvHistory) {
   if (!mvHistory?.points?.length) return null;
-  // dt = Tage seit 1970-01-01 → in Datum umrechnen für Labels
   const labels = mvHistory.points.map((p) => {
     const d = new Date(p.dt * 86400000);
     return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
   });
-  const values = mvHistory.points.map((p) => Math.round(p.mv / 1e6 * 10) / 10); // Mio. €, eine Nachkommastelle
+  const values = mvHistory.points.map((p) => Math.round(p.mv / 1e6 * 10) / 10);
   return chartUrl({
     type: "line",
     data: {
@@ -250,7 +267,7 @@ function mvChart(stats, mvHistory) {
 
 // statsEmbed liefert bis zu zwei Embeds: Punkte-Chart + (optional) MV-Chart.
 // `compareTo` (optional): Stats des Liga-Besten für eine Vergleichszeile.
-export function statsEmbed(leagueName, period, stats, mvHistory = null, compareTo = null) {
+export async function statsEmbed(leagueName, period, stats, mvHistory = null, compareTo = null) {
   if (!stats || stats.n === 0) {
     return [new EmbedBuilder()
       .setTitle(`📊 Stats — ${stats?.name || "?"}`)
@@ -279,28 +296,29 @@ export function statsEmbed(leagueName, period, stats, mvHistory = null, compareT
     fields.push({ name: "🌟 Top-Performer im Kader", value: lines.join("\n"), inline: false });
   }
 
+  const [pointsImg, mvImg] = await Promise.all([pointsChart(stats), mvChart(stats, mvHistory)]);
+
   const main = new EmbedBuilder()
     .setTitle(`📊 ${stats.name} — ${leagueName}`)
     .setDescription(`_${periodLabel}_${compareLine}`)
     .addFields(fields)
-    .setImage(pointsChart(stats))
     .setColor(0x00e676)
     .setTimestamp(new Date())
     .setFooter({ text: `${leagueName} · n=${stats.n} · 24h: ${signMoney(stats.teamValueDailyDelta)}` });
+  if (pointsImg) main.setImage(pointsImg);
 
-  const mv = mvChart(stats, mvHistory);
-  if (!mv) return [main];
+  if (!mvImg) return [main];
 
   const mvEmbed = new EmbedBuilder()
     .setTitle(`💰 Marktwert-Entwicklung — ${stats.name}`)
     .setDescription(`_Team-Marktwert der letzten ${mvHistory.points.length} Tage_`)
-    .setImage(mv)
+    .setImage(mvImg)
     .setColor(0xfbbf24);
 
   return [main, mvEmbed];
 }
 
-export function leagueStatsEmbed(leagueName, period, league) {
+export async function leagueStatsEmbed(leagueName, period, league) {
   if (!league.managers.length) {
     return new EmbedBuilder().setTitle(`📊 Stats — ${leagueName}`).setDescription(`_Keine Daten._`).setColor(0x94a3b8);
   }
@@ -308,9 +326,8 @@ export function leagueStatsEmbed(leagueName, period, league) {
   const top5 = [...league.managers].sort((a, b) => b.mean - a.mean).slice(0, 5);
   const colors = ["rgb(0,230,118)", "rgb(255,209,0)", "rgb(68,138,255)", "rgb(255,64,129)", "rgb(255,145,0)"];
 
-  // Multi-Line Chart: alle Top-5 über die Zeit
   const allDays = top5[0]?.days || [];
-  const chart = chartUrl({
+  const chart = await chartUrl({
     type: "line",
     data: {
       labels: allDays.map((d) => `ST ${d}`),
@@ -342,13 +359,14 @@ export function leagueStatsEmbed(leagueName, period, league) {
     `📈 **Liga-Durchschnitt**: ${league.leagueMean.toFixed(1)} Pkt`,
   ];
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(`📊 Liga-Stats — ${leagueName}`)
     .setDescription(`_${periodLabel}_\n\n${lines.join("\n")}`)
-    .setImage(chart)
     .setColor(0x00e676)
     .setTimestamp(new Date())
     .setFooter({ text: `${league.managers.length} Manager · Top 5 im Chart` });
+  if (chart) embed.setImage(chart);
+  return embed;
 }
 
 export function helpEmbed() {

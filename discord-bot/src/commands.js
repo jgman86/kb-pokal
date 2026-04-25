@@ -150,20 +150,21 @@ export async function handleCommand(interaction, config) {
       const userIdOrName = interaction.options.getString("user");
       if (!userIdOrName) {
         const league_stats = await kb.getLeagueStats(league.id, last);
-        return interaction.editReply({ embeds: [leagueStatsEmbed(league.name, last, league_stats)] });
+        const embed = await leagueStatsEmbed(league.name, last, league_stats);
+        return interaction.editReply({ embeds: [embed] });
       }
       const members = await membersOf(league.id);
       const user = members.find((m) => m.id === userIdOrName) || members.find((m) => m.name.toLowerCase() === userIdOrName.toLowerCase());
       if (!user) return interaction.editReply({ embeds: [errorEmbed(`Manager "${userIdOrName}" in ${league.name} nicht gefunden`)] });
 
-      // Stats + MV-Historie + Liga-Bester parallel — letzter ist günstig (cached members + ein zusätzlicher Liga-stats call)
       const stats = await kb.getManagerStats(league.id, user.id, last);
       const [mvHistory, leagueStats] = await Promise.all([
         kb.getTeamMarketValueHistory(league.id, stats.squadPlayerIds, 92).catch(() => null),
         kb.getLeagueStats(league.id, last).catch(() => null),
       ]);
       const compareTo = leagueStats?.bestByMean || null;
-      return interaction.editReply({ embeds: statsEmbed(league.name, last, stats, mvHistory, compareTo) });
+      const embeds = await statsEmbed(league.name, last, stats, mvHistory, compareTo);
+      return interaction.editReply({ embeds });
     }
 
     if (commandName === "lineup") {
