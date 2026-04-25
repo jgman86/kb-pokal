@@ -239,12 +239,44 @@ export async function getManagerStats(leagueId, managerId, lastN = null) {
   const teamValueGainLoss = squadPlayers.reduce((a, p) => a + Number(p.mvgl || 0), 0);
   const teamValueDailyDelta = squadPlayers.reduce((a, p) => a + Number(p.sdmvt || 0), 0);
 
+  // Top-Spieler im Kader nach Ø-Punkten (ap = average points)
+  const topPlayers = [...squadPlayers]
+    .filter((p) => Number(p.ap) > 0 && p.pn)
+    .sort((a, b) => Number(b.ap) - Number(a.ap))
+    .slice(0, 5)
+    .map((p) => ({ id: String(p.pi), name: p.pn, avgPoints: Number(p.ap), totalPoints: Number(p.p || 0), marketValue: Number(p.mv || 0) }));
+
   return {
     id: String(managerId), name,
     days, points,
     n, mean, sd, min, max, minDay, maxDay,
     teamValue, teamValueGainLoss, teamValueDailyDelta,
+    squadPlayerIds: squadPlayers.map((p) => String(p.pi)).filter(Boolean),
+    topPlayers,
   };
+}
+
+// Team-Marktwert-Kurve über die letzten 92 Tage. Pro Squad-Spieler die MV-Historie
+// holen und nach Datum aufsummieren. Optional auf lastDays beschränken.
+export async function getTeamMarketValueHistory(leagueId, playerIds, lastDays = null) {
+  if (!playerIds?.length) return { points: [] };
+  const promises = playerIds.map((pid) =>
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/players/${encodeURIComponent(pid)}/marketValue/92`).catch(() => null),
+  );
+  const results = await Promise.all(promises);
+  const byDt = new Map();
+  for (const r of results) {
+    if (!r || !Array.isArray(r.it)) continue;
+    for (const e of r.it) {
+      const dt = Number(e.dt);
+      const mv = Number(e.mv || 0);
+      if (!isFinite(dt)) continue;
+      byDt.set(dt, (byDt.get(dt) || 0) + mv);
+    }
+  }
+  let series = [...byDt.entries()].sort((a, b) => a[0] - b[0]).map(([dt, mv]) => ({ dt, mv }));
+  if (lastDays && series.length > lastDays) series = series.slice(-lastDays);
+  return { points: series };
 }
 
 export async function getLeagueStats(leagueId, lastN = null) {

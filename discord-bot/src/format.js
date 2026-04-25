@@ -187,16 +187,9 @@ const fmtMoney = (v) => {
 };
 const signMoney = (v) => (v >= 0 ? `+${fmtMoney(v)}` : fmtMoney(v));
 
-export function statsEmbed(leagueName, period, stats) {
-  if (!stats || stats.n === 0) {
-    return new EmbedBuilder()
-      .setTitle(`📊 Stats — ${stats?.name || "?"}`)
-      .setDescription(`_Keine Datenpunkte im gewählten Zeitraum._`)
-      .setColor(0x94a3b8);
-  }
-  const periodLabel = period ? `Letzte ${period} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})` : `Alle ${stats.n} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})`;
-
-  const chart = chartUrl({
+// Punkte-Chart (gefüllte Linie)
+function pointsChart(stats) {
+  return chartUrl({
     type: "line",
     data: {
       labels: stats.days.map((d) => `ST ${d}`),
@@ -212,29 +205,99 @@ export function statsEmbed(leagueName, period, stats) {
       }],
     },
     options: {
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, title: { display: true, text: "Punkte pro Spieltag", color: "#cbd5e1" } },
       scales: {
         y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.15)" } },
         x: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.08)" } },
       },
     },
   });
+}
 
-  return new EmbedBuilder()
+// Marktwert-Chart (Team-MV über Zeit)
+function mvChart(stats, mvHistory) {
+  if (!mvHistory?.points?.length) return null;
+  // dt = Tage seit 1970-01-01 → in Datum umrechnen für Labels
+  const labels = mvHistory.points.map((p) => {
+    const d = new Date(p.dt * 86400000);
+    return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+  });
+  const values = mvHistory.points.map((p) => Math.round(p.mv / 1e6 * 10) / 10); // Mio. €, eine Nachkommastelle
+  return chartUrl({
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Team-Marktwert (M€)",
+        data: values,
+        borderColor: "rgb(255,209,0)",
+        backgroundColor: "rgba(255,209,0,.18)",
+        fill: true,
+        tension: 0.3,
+        pointRadius: 1,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false }, title: { display: true, text: "Team-Marktwert (M€)", color: "#cbd5e1" } },
+      scales: {
+        y: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,.15)" } },
+        x: { ticks: { color: "#94a3b8", maxTicksLimit: 12 }, grid: { color: "rgba(148,163,184,.08)" } },
+      },
+    },
+  }, 800, 320);
+}
+
+// statsEmbed liefert bis zu zwei Embeds: Punkte-Chart + (optional) MV-Chart.
+// `compareTo` (optional): Stats des Liga-Besten für eine Vergleichszeile.
+export function statsEmbed(leagueName, period, stats, mvHistory = null, compareTo = null) {
+  if (!stats || stats.n === 0) {
+    return [new EmbedBuilder()
+      .setTitle(`📊 Stats — ${stats?.name || "?"}`)
+      .setDescription(`_Keine Datenpunkte im gewählten Zeitraum._`)
+      .setColor(0x94a3b8)];
+  }
+  const periodLabel = period ? `Letzte ${period} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})` : `Alle ${stats.n} Spieltage (${stats.days[0]}–${stats.days[stats.days.length - 1]})`;
+  const compareLine = compareTo && compareTo.id !== stats.id
+    ? `\n🥇 _Liga-Bester: ${compareTo.name} — ${compareTo.mean.toFixed(1)} ± ${compareTo.sd.toFixed(1)}_`
+    : compareTo && compareTo.id === stats.id
+    ? `\n🥇 _Du bist Liga-Bester (Ø Punkte)._`
+    : "";
+
+  const fields = [
+    { name: "Ø Punkte", value: `**${stats.mean.toFixed(1)}** ± ${stats.sd.toFixed(1)}`, inline: true },
+    { name: "Range", value: `${stats.min} – ${stats.max}`, inline: true },
+    { name: "Bester Spieltag", value: `ST ${stats.maxDay}: **${stats.max}**`, inline: true },
+    { name: "Schlechtester", value: `ST ${stats.minDay}: ${stats.min}`, inline: true },
+    { name: "Team-Marktwert", value: fmtMoney(stats.teamValue), inline: true },
+    { name: "Saison-Δ", value: signMoney(stats.teamValueGainLoss), inline: true },
+  ];
+
+  // Top-Performer im Kader (nach Ø-Punkten)
+  if (stats.topPlayers && stats.topPlayers.length > 0) {
+    const lines = stats.topPlayers.slice(0, 5).map((p, i) => `${["🥇", "🥈", "🥉", "4.", "5."][i]} **${p.name}** — ${p.avgPoints} Ø Pkt`);
+    fields.push({ name: "🌟 Top-Performer im Kader", value: lines.join("\n"), inline: false });
+  }
+
+  const main = new EmbedBuilder()
     .setTitle(`📊 ${stats.name} — ${leagueName}`)
-    .setDescription(`_${periodLabel}_`)
-    .addFields(
-      { name: "Ø Punkte", value: `**${stats.mean.toFixed(1)}** ± ${stats.sd.toFixed(1)}`, inline: true },
-      { name: "Range", value: `${stats.min} – ${stats.max}`, inline: true },
-      { name: "Bester Spieltag", value: `ST ${stats.maxDay}: **${stats.max}**`, inline: true },
-      { name: "Schlechtester", value: `ST ${stats.minDay}: ${stats.min}`, inline: true },
-      { name: "Team-Marktwert", value: fmtMoney(stats.teamValue), inline: true },
-      { name: "Saison-Δ", value: signMoney(stats.teamValueGainLoss), inline: true },
-    )
-    .setImage(chart)
+    .setDescription(`_${periodLabel}_${compareLine}`)
+    .addFields(fields)
+    .setImage(pointsChart(stats))
     .setColor(0x00e676)
     .setTimestamp(new Date())
     .setFooter({ text: `${leagueName} · n=${stats.n} · 24h: ${signMoney(stats.teamValueDailyDelta)}` });
+
+  const mv = mvChart(stats, mvHistory);
+  if (!mv) return [main];
+
+  const mvEmbed = new EmbedBuilder()
+    .setTitle(`💰 Marktwert-Entwicklung — ${stats.name}`)
+    .setDescription(`_Team-Marktwert der letzten ${mvHistory.points.length} Tage_`)
+    .setImage(mv)
+    .setColor(0xfbbf24);
+
+  return [main, mvEmbed];
 }
 
 export function leagueStatsEmbed(leagueName, period, league) {
