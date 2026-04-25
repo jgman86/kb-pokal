@@ -91,6 +91,22 @@ export function matchdayEmbed(leagueName, day, rows, opts = {}) {
   const top25 = rows.slice(0, 25);
   const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
   const meta = rows._meta || {};
+
+  // Tag liegt vor dem ersten verfügbaren Spieltag der Liga
+  // (Liga vielleicht später erstellt, später aktiviert, oder Account-Permissions)
+  if (meta.total > 0 && meta.nonZero === 0 && meta.earliestAccessibleDay && day < meta.earliestAccessibleDay) {
+    return new EmbedBuilder()
+      .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
+      .setDescription(
+        `⚠️ **Keine Daten für Spieltag ${day}**\n\n` +
+        `Frühester verfügbarer Spieltag in dieser Liga: **${meta.earliestAccessibleDay}**.\n` +
+        `_Verfügbarer Bereich: Spieltag ${meta.earliestAccessibleDay} bis aktuell._`
+      )
+      .setColor(0xff9100)
+      .setTimestamp(new Date())
+      .setFooter({ text: leagueName });
+  }
+
   const warnLines = [];
   if (meta.total > 0 && meta.nonZero === 0) {
     warnLines.push(`⚠️ Alle Manager 0 Punkte — Spieltag liegt in der Zukunft oder wurde nicht gespielt.`);

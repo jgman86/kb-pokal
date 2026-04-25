@@ -172,20 +172,25 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
   const rows = managers.map((m, i) => ({ ...m, points: pointsForDay(perfs[i]) }));
   const nonZero = rows.filter((r) => r.points > 0).length;
 
-  // Wenn alles 0 ist → tiefer graben und Roh-Struktur des ersten Managers loggen
+  // Wenn alles 0: ermitteln ob's am Bot-Beitritt liegt (= Tag liegt vor Bot-Membership)
+  let earliestAccessibleDay = null;
   if (rows.length > 0 && nonZero === 0) {
     const sample = perfs.find((p) => p && Array.isArray(p.it));
     if (sample) {
+      // Frühester Tag in der jüngsten Saison = Datum, ab dem Bot Zugriff hat
+      const latestSeason = sample.it[sample.it.length - 1];
+      const days = (latestSeason?.it || latestSeason?.ph || []).map((ph) => Number(ph.day)).filter((n) => !isNaN(n));
+      if (days.length > 0) earliestAccessibleDay = Math.min(...days);
+
       const seasonSummaries = sample.it.map((s) => {
-        const days = (s.it || s.ph || []).map((ph) => `${ph.day}:${ph.mdp ?? ph.p ?? "?"}`);
-        return `[${s.sn || s.sid || "?"}] (${days.length} days) ${days.slice(0, 5).join(", ")}${days.length > 5 ? ` ... ${days.slice(-3).join(", ")}` : ""}`;
+        const ds = (s.it || s.ph || []).map((ph) => `${ph.day}:${ph.mdp ?? ph.p ?? "?"}`);
+        return `[${s.sn || s.sid || "?"}] (${ds.length} days) ${ds.slice(0, 5).join(", ")}${ds.length > 5 ? ` ... ${ds.slice(-3).join(", ")}` : ""}`;
       });
       console.warn(`[KB] day=${day}: alle mdp=0. Erster Manager hat ${sample.it.length} Saisons:\n  - ${seasonSummaries.join("\n  - ")}`);
-    } else {
-      console.warn(`[KB] day=${day}: alle mdp=0 und keiner der ${rows.length} Manager hat eine parseable it[]. Failures=${perfFailures}, first response keys: ${perfs[0] ? JSON.stringify(Object.keys(perfs[0])) : "null"}`);
     }
   }
-  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures } });
+
+  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures, earliestAccessibleDay } });
 }
 
 // Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel
