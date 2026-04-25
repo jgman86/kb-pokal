@@ -219,10 +219,12 @@ export async function kbFetch(action, params, adminHash) {
 // ============================================
 export async function postDiscord(event, payload) {
   try {
+    // Immer die App-URL mitschicken, damit Embed-Titel klickbar wird
+    const enriched = { ...payload, appUrl: typeof window !== "undefined" ? window.location.origin : "" };
     const r = await fetch("/api/discord", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ event, payload }),
+      body: JSON.stringify({ event, payload: enriched }),
     });
     if (!r.ok) console.warn("Discord webhook failed:", r.status);
     return r.ok;

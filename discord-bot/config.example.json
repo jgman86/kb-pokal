@@ -1,0 +1,47 @@
+{
+  "leagues": [
+    {
+      "id": "5310801",
+      "name": "Liga A",
+      "channelId": "111111111111111111"
+    },
+    {
+      "id": "5310802",
+      "name": "Liga B",
+      "channelId": "222222222222222222"
+    },
+    {
+      "id": "5310803",
+      "name": "Liga C",
+      "channelId": "333333333333333333"
+    }
+  ],
+
+  "schedules": [
+    {
+      "name": "Wochenstand Liga A",
+      "cron": "0 21 * * 1",
+      "leagueId": "5310801",
+      "task": "standings",
+      "tz": "Europe/Berlin"
+    },
+    {
+      "name": "Spieltag-Recap Liga A (Montag 21:30)",
+      "cron": "30 21 * * 1",
+      "leagueId": "5310801",
+      "task": "matchday",
+      "matchdayOffset": -1,
+      "tz": "Europe/Berlin"
+    }
+  ],
+
+  "_doc": {
+    "leagues": "id = Kickbase-League-ID (steht in der URL der League-Seite). channelId = Discord-Channel-ID (Rechtsklick auf Channel → Channel-ID kopieren, Developer-Mode nötig).",
+    "cron_format": "Minute Stunde Tag-im-Monat Monat Wochentag — siehe https://crontab.guru. Beispiele: '0 21 * * 1' = Mo 21:00, '0 9 * * *' = jeden Tag 9:00, '*/30 * * * *' = alle 30 Min.",
+    "tasks": {
+      "standings": "Saison-Tabelle (Punkte gesamt) der Liga",
+      "matchday": "Tabelle eines bestimmten Spieltags. matchdayOffset = -1 → letzter Spieltag, 0 → aktueller, oder fester Tag mit \"matchday\": 18"
+    },
+    "matchdayOffset": "Relativ: -1 = letzter, 0 = aktueller. Statisch: Feld weglassen und stattdessen 'matchday': 18 setzen."
+  }
+}
