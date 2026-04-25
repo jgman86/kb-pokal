@@ -13,26 +13,74 @@ const padL = (s, n) => {
   return str.length >= n ? str.slice(-n) : " ".repeat(n - str.length) + str;
 };
 
+// ANSI color codes (funktionieren in Discord-ansi-Code-Blöcken)
+const ANSI = {
+  reset: "\u001b[0m",
+  gold: "\u001b[1;33m",  // Champion
+  green: "\u001b[1;32m", // Aufsteiger
+  red: "\u001b[1;31m",   // Absteiger
+  dim: "\u001b[2;37m",   // Trennlinien
+};
+
+const TOP_N = 3;
+const BOT_N = 3;
+
+// Markiert die ersten 3 grün, den 1. zusätzlich gold + 🏆,
+// die letzten 3 rot, mit Trennlinien dazwischen.
 function tableBlock(rows) {
   if (!rows.length) return "_(keine Daten)_";
-  const w = Math.min(20, Math.max(8, ...rows.map((r) => r.name.length)));
-  const lines = rows.map((r) => `${padL(r.rank, 3)}. ${pad(r.name, w)}  ${padL(r.points, 5)}`);
-  return "```\n" + lines.join("\n") + "\n```";
+  const w = Math.min(22, Math.max(8, ...rows.map((r) => r.name.length)));
+  const N = rows.length;
+  const hasGap = N > TOP_N + BOT_N;
+  const sepLine = ANSI.dim + "─".repeat(w + 14) + ANSI.reset;
+
+  const lines = [];
+  rows.forEach((r, i) => {
+    let color = "";
+    let prefix = "  ";
+    if (i === 0) { color = ANSI.gold; prefix = "🏆"; }
+    else if (i < TOP_N) { color = ANSI.green; prefix = "  "; }
+    else if (hasGap && i >= N - BOT_N) { color = ANSI.red; prefix = "  "; }
+    const reset = color ? ANSI.reset : "";
+    const rank = padL(r.rank, 2);
+    const name = pad(r.name, w);
+    const pts = padL(r.points, 5);
+    lines.push(`${prefix} ${color}${rank}. ${name}  ${pts}${reset}`);
+
+    if (hasGap && i === TOP_N - 1) lines.push(`   ${sepLine}`);
+    if (hasGap && i === N - BOT_N - 1) lines.push(`   ${sepLine}`);
+  });
+  return "```ansi\n" + lines.join("\n") + "\n```";
+}
+
+function legendLines(rows, isMatchday = false) {
+  if (!rows.length) return "";
+  const N = rows.length;
+  const champ = rows[0];
+  const top = rows.slice(1, TOP_N).map((r) => r.name).filter(Boolean);
+  const bot = N > TOP_N + BOT_N ? rows.slice(N - BOT_N).map((r) => r.name) : [];
+  const lines = [];
+  lines.push(`🏆 **${isMatchday ? "Spieltagssieger" : "Pokalsieger"}:** ${champ.name} _(${champ.points} Pkt)_`);
+  if (top.length) lines.push(`🟢 **${isMatchday ? "Top 3" : "Aufstieg"}:** ${top.join(", ")}`);
+  if (bot.length) lines.push(`🔴 **${isMatchday ? "Bottom 3" : "Abstieg"}:** ${bot.join(", ")}`);
+  return lines.join("\n");
 }
 
 export function standingsEmbed(leagueName, rows) {
+  const top25 = rows.slice(0, 25);
   return new EmbedBuilder()
-    .setTitle(`🏆 Tabelle — ${leagueName}`)
-    .setDescription(`**Saisonpunkte**\n${tableBlock(rows.slice(0, 25))}`)
+    .setTitle(`🏆 Saison-Tabelle — ${leagueName}`)
+    .setDescription(`${legendLines(top25)}\n\n${tableBlock(top25)}`)
     .setColor(COLORS.standings)
     .setTimestamp(new Date())
     .setFooter({ text: `${rows.length} Manager` });
 }
 
 export function matchdayEmbed(leagueName, day, rows) {
+  const top25 = rows.slice(0, 25);
   return new EmbedBuilder()
     .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
-    .setDescription(`**Punkte am Spieltag**\n${tableBlock(rows.slice(0, 25))}`)
+    .setDescription(`${legendLines(top25, true)}\n\n${tableBlock(top25)}`)
     .setColor(COLORS.matchday)
     .setTimestamp(new Date())
     .setFooter({ text: `${rows.length} Manager` });
