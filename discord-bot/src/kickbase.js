@@ -65,7 +65,8 @@ export async function listLeagues() {
 }
 
 export async function listMembers(leagueId) {
-  // Primär: settings/managers (admin-only) → Fallback: ranking (universal)
+  // Beide Endpoints liefern us[].{i, n, uim} — settings/managers ist
+  // Admin-only, ranking funktioniert für jedes Mitglied.
   let raw, source;
   try {
     raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/settings/managers`);
@@ -74,31 +75,36 @@ export async function listMembers(leagueId) {
     raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
     source = "ranking";
   }
-  const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
+  const arr = raw.us || [];
   return {
     source,
     members: arr.map((m) => ({
-      id: String(m.i || m.id || m.userId || ""),
-      name: m.n || m.name || m.nickname || "?",
+      id: String(m.i || ""),
+      name: m.n || "?",
       image: m.uim || "",
     })).filter((m) => m.id),
   };
 }
 
 function rankByPoints(rows) {
-  // Stabil-sortieren: höchste Punkte oben, bei Gleichstand alphabetisch
   rows.sort((a, b) => (b.points - a.points) || a.name.localeCompare(b.name));
   rows.forEach((r, i) => { r.rank = i + 1; });
   return rows;
 }
 
+// Schema laut kickbase-api-doc:
+//   GET /v4/leagues/{lid}/ranking → { us: [{i, n, sp, mdp, spl, mdpl, uim, ...}] }
+//   sp  = season points (kumuliert)
+//   mdp = matchday points (am angefragten dayNumber, sonst 0)
+//   spl = season points place/rank
+//   mdpl = matchday points place/rank
 export async function getStandings(leagueId) {
   const raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
-  const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
+  const arr = raw.us || [];
   const rows = arr.map((m) => ({
-    id: String(m.i || m.id || m.userId || ""),
-    name: m.n || m.name || "?",
-    points: Number(m.sp ?? m.seasonPoints ?? m.tp ?? m.totalPoints ?? m.p ?? 0),
+    id: String(m.i || ""),
+    name: m.n || "?",
+    points: Number(m.sp || 0),
     image: m.uim || "",
   })).filter((m) => m.id);
   return rankByPoints(rows);
@@ -106,82 +112,81 @@ export async function getStandings(leagueId) {
 
 export async function getMatchdayPoints(leagueId, dayNumber) {
   const raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking?dayNumber=${encodeURIComponent(dayNumber)}`);
-  const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
+  const arr = raw.us || [];
   const rows = arr.map((m) => ({
-    id: String(m.i || m.id || m.userId || ""),
-    name: m.n || m.name || "?",
-    points: Number(m.sp ?? m.mdp ?? m.matchdayPoints ?? m.p ?? 0),
+    id: String(m.i || ""),
+    name: m.n || "?",
+    points: Number(m.mdp || 0),  // <-- mdp ist Matchday-Punkte, nicht sp!
+    image: m.uim || "",
   })).filter((m) => m.id);
   return rankByPoints(rows);
 }
 
-// Findet rekursiv das erste Array, dessen Objekte wie Spieler aussehen
-// (haben einen Namen UND eine Punktzahl ODER eine Position).
-function findPlayerArray(node, depth = 0) {
-  if (!node || depth > 4) return null;
-  if (Array.isArray(node)) {
-    if (node.length > 0 && typeof node[0] === "object" && node[0] !== null) {
-      const sample = node[0];
-      const hasName = sample.fn || sample.ln || sample.n || sample.name || sample.lastName;
-      const hasNumeric = sample.tp != null || sample.p != null || sample.mdp != null || sample.points != null || sample.totalPoints != null || sample.pos != null || sample.position != null;
-      if (hasName && hasNumeric) return node;
-    }
-    for (const item of node) {
-      const r = findPlayerArray(item, depth + 1);
-      if (r) return r;
-    }
-    return null;
-  }
-  if (typeof node === "object") {
-    for (const key of Object.keys(node)) {
-      const r = findPlayerArray(node[key], depth + 1);
-      if (r) return r;
-    }
-  }
-  return null;
-}
-
+// Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel
+// wo's geht), weil Kickbase die Daten verteilt:
+//   1. /teamcenter?dayNumber=X    → us[].lp (Player-IDs der Aufstellung) + us[].mdp (Total)
+//   2. /managers/{uid}/squad      → it[].pi/pn (Player-Namen + Positionen)
+//   3. /players/{pid}/performance → it[].ph[].p für genauen Tag (parallel × 11)
 export async function getLineup(leagueId, userId, dayNumber) {
-  const data = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/users/${encodeURIComponent(userId)}/teamcenter?dayNumber=${encodeURIComponent(dayNumber)}`);
-  // Bekannte Wrapper zuerst, dann Tiefen-Suche als Fallback
-  const candidates = [data.lineup, data.players, data.it, data.squad, data.pl, data.ap, data.tm?.players, data.t?.players, data.tm?.tps, data.psl, data.fl];
-  let rawLineup = candidates.find((c) => Array.isArray(c) && c.length > 0);
-  if (!rawLineup) rawLineup = findPlayerArray(data) || [];
+  const day = Number(dayNumber);
 
-  const lineup = rawLineup.map((p) => ({
-    id: String(p.i || p.id || ""),
-    firstName: p.fn || p.firstName || "",
-    lastName: p.ln || p.lastName || p.n || p.name || "?",
-    number: p.nr || p.number || p.shn || null,
-    position: p.pos || p.position || null,
-    points: Number(p.tp ?? p.totalPoints ?? p.p ?? p.points ?? p.mdp ?? p.lp ?? 0),
-    status: p.st || p.status || null,
-  }));
-  const totalPoints = Number(data.totalPoints ?? data.tp ?? data.sp ?? data.pt ?? lineup.reduce((a, x) => a + (x.points || 0), 0));
+  // 1. Teamcenter: us[] enthält ALLE Manager der Liga, wir filtern unseren raus
+  const tc = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/users/${encodeURIComponent(userId)}/teamcenter?dayNumber=${day}`);
+  const me = (tc.us || []).find((u) => String(u.i) === String(userId));
+  if (!me) {
+    return { lineup: [], totalPoints: 0, _rawSample: JSON.stringify(tc).slice(0, 1500) };
+  }
+  const playerIds = (me.lp || []).filter((p) => p != null && p !== "").map(String);
+  const totalPoints = Number(me.mdp || 0);
+  if (playerIds.length === 0) return { lineup: [], totalPoints };
 
-  // Wenn nichts geparsed wurde, raw-Sample mitgeben damit wir das Schema sehen
-  const _rawSample = lineup.length === 0 ? JSON.stringify(data).slice(0, 1500) : undefined;
-  return { lineup, totalPoints, _rawSample };
+  // 2. Squad parallel (Namen + Positionen aus aktuellem Kader)
+  const squadPromise = get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(userId)}/squad`).catch(() => ({}));
+
+  // 3. Per-Player Performance parallel (Matchday-Punkte pro Spieler)
+  const perfPromises = playerIds.map((pid) =>
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/players/${encodeURIComponent(pid)}/performance`).catch(() => null),
+  );
+
+  const [squad, ...perfs] = await Promise.all([squadPromise, ...perfPromises]);
+  const squadById = Object.fromEntries(((squad && squad.it) || []).map((p) => [String(p.pi), p]));
+
+  function pointsForDay(perf) {
+    if (!perf || !Array.isArray(perf.it)) return 0;
+    let bestDate = "", bestPoints = 0;
+    for (const season of perf.it) {
+      for (const ph of season.ph || []) {
+        if (Number(ph.day) !== day) continue;
+        const md = ph.md || "";
+        if (md > bestDate) { bestDate = md; bestPoints = Number(ph.p || 0); }
+      }
+    }
+    return bestPoints;
+  }
+
+  const lineup = playerIds.map((pid, i) => {
+    const sq = squadById[pid] || {};
+    return {
+      id: pid,
+      firstName: "",
+      lastName: sq.pn || "?",
+      number: null,
+      position: sq.pos ?? null,
+      points: pointsForDay(perfs[i]),
+      status: sq.st ?? null,
+    };
+  });
+
+  return { lineup, totalPoints };
 }
 
 export async function getCurrentMatchday() {
-  // overview enthält day-Feld (current matchday)
-  try {
-    const res = await get(`/v4/competitions`);
-    // competitions[0].cd oder ähnlich — variiert
-    if (Array.isArray(res?.it)) {
-      const c = res.it[0];
-      const d = c?.cd ?? c?.dn ?? c?.day;
-      if (d) return Number(d);
-    }
-  } catch {}
-  // Fallback: settings/managers liefert "day" Feld
+  // /ranking-Response enthält "day"-Feld als Top-Level (siehe Doku-Sample)
   try {
     const leagues = await listLeagues();
-    if (leagues[0]) {
-      const r = await get(`/v4/leagues/${encodeURIComponent(leagues[0].id)}/settings/managers`);
-      if (r?.day) return Number(r.day);
-    }
+    if (!leagues[0]) return null;
+    const r = await get(`/v4/leagues/${encodeURIComponent(leagues[0].id)}/ranking`);
+    if (r?.day) return Number(r.day);
   } catch {}
   return null;
 }
