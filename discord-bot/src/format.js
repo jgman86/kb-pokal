@@ -290,9 +290,12 @@ export async function statsEmbed(leagueName, period, stats, mvHistory = null, co
     { name: "Saison-Δ", value: signMoney(stats.teamValueGainLoss), inline: true },
   ];
 
-  // Top-Performer im Kader (nach Ø-Punkten)
+  // Top-Performer im Kader (nach Ø-Punkten + σ)
   if (stats.topPlayers && stats.topPlayers.length > 0) {
-    const lines = stats.topPlayers.slice(0, 5).map((p, i) => `${["🥇", "🥈", "🥉", "4.", "5."][i]} **${p.name}** — ${p.avgPoints} Ø Pkt`);
+    const lines = stats.topPlayers.slice(0, 5).map((p, i) => {
+      const sdPart = p.sd > 0 ? ` ± ${p.sd.toFixed(1)}` : "";
+      return `${["🥇", "🥈", "🥉", "4.", "5."][i]} **${p.name}** — ${p.avgPoints}${sdPart} Ø Pkt`;
+    });
     fields.push({ name: "🌟 Top-Performer im Kader", value: lines.join("\n"), inline: false });
   }
 

@@ -97,6 +97,25 @@ export async function handleCommand(interaction, config) {
   if (commandName === "run-schedule") {
     await interaction.deferReply({ ephemeral: true });
     const name = interaction.options.getString("job", true);
+
+    // Sonderformen: __all_standings / __all_matchday → für alle konfigurierten Ligen
+    if (name === "__all_standings" || name === "__all_matchday") {
+      const task = name === "__all_standings" ? "standings" : "matchday";
+      const results = [];
+      for (const league of config.leagues) {
+        const virtualSched = task === "standings"
+          ? { name: `${league.name} — Saison-Tabelle (manuell)`, leagueId: league.id, task: "standings" }
+          : { name: `${league.name} — Spieltag-Recap (manuell)`, leagueId: league.id, task: "matchday", matchdayOffset: -1 };
+        try {
+          await runJob(interaction.client, virtualSched, league);
+          results.push(`✓ ${league.name} → <#${league.channelId}>`);
+        } catch (e) {
+          results.push(`✗ ${league.name}: ${e.message}`);
+        }
+      }
+      return interaction.editReply(`**Manueller Run für alle Ligen (${task}):**\n${results.join("\n")}`);
+    }
+
     const sched = (config.schedules || []).find((s) => s.name === name);
     if (!sched) return interaction.editReply({ embeds: [errorEmbed(`Schedule "${name}" nicht gefunden.`)] });
     const league = config.leagues.find((l) => l.id === sched.leagueId);
@@ -191,11 +210,16 @@ export async function handleAutocomplete(interaction, config) {
 
     if (focused.name === "job") {
       const q = focused.value.toLowerCase();
-      const matches = (config.schedules || [])
+      // Virtuelle "Alle Ligen"-Einträge oben anpinnen
+      const virtual = [
+        { name: "🌐 Alle Ligen — Saison-Tabelle", value: "__all_standings" },
+        { name: "🌐 Alle Ligen — Spieltag-Recap", value: "__all_matchday" },
+      ].filter((v) => !q || v.name.toLowerCase().includes(q));
+      const real = (config.schedules || [])
         .filter((s) => s.name.toLowerCase().includes(q))
-        .slice(0, 25)
+        .slice(0, 25 - virtual.length)
         .map((s) => ({ name: s.name, value: s.name }));
-      return interaction.respond(matches);
+      return interaction.respond([...virtual, ...real]);
     }
 
     if (focused.name !== "user") return interaction.respond([]);

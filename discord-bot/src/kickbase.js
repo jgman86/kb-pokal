@@ -239,12 +239,29 @@ export async function getManagerStats(leagueId, managerId, lastN = null) {
   const teamValueGainLoss = squadPlayers.reduce((a, p) => a + Number(p.mvgl || 0), 0);
   const teamValueDailyDelta = squadPlayers.reduce((a, p) => a + Number(p.sdmvt || 0), 0);
 
-  // Top-Spieler im Kader nach Ø-Punkten (ap = average points)
-  const topPlayers = [...squadPlayers]
+  // Top-Spieler im Kader nach Ø-Punkten (ap = average points). σ via /players/{pid}/performance.
+  const topPlayersBase = [...squadPlayers]
     .filter((p) => Number(p.ap) > 0 && p.pn)
     .sort((a, b) => Number(b.ap) - Number(a.ap))
-    .slice(0, 5)
-    .map((p) => ({ id: String(p.pi), name: p.pn, avgPoints: Number(p.ap), totalPoints: Number(p.p || 0), marketValue: Number(p.mv || 0) }));
+    .slice(0, 5);
+  const playerPerfs = await Promise.all(topPlayersBase.map((p) =>
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/players/${encodeURIComponent(p.pi)}/performance`).catch(() => null),
+  ));
+  const topPlayers = topPlayersBase.map((p, i) => {
+    const perf = playerPerfs[i];
+    let pSd = 0;
+    if (perf?.it) {
+      // Punkte aus der jüngsten Saison, nur Spiele mit positiven Punkten (= eingewechselt)
+      const latest = perf.it[perf.it.length - 1];
+      const pts = (latest?.ph || []).map((ph) => Number(ph.p || 0)).filter((v) => v > 0);
+      if (pts.length > 1) {
+        const m = pts.reduce((a, b) => a + b, 0) / pts.length;
+        const v = pts.reduce((a, b) => a + (b - m) ** 2, 0) / (pts.length - 1);
+        pSd = Math.sqrt(v);
+      }
+    }
+    return { id: String(p.pi), name: p.pn, avgPoints: Number(p.ap), sd: pSd, totalPoints: Number(p.p || 0), marketValue: Number(p.mv || 0) };
+  });
 
   return {
     id: String(managerId), name,
