@@ -52,7 +52,7 @@ export function pointsEmbed(leagueName, user, totalPoints, day, dayPoints) {
     .setFooter({ text: leagueName });
 }
 
-export function lineupEmbed(leagueName, user, day, lineup, totalPoints) {
+export function lineupEmbed(leagueName, user, day, lineup, totalPoints, rawSample) {
   const sorted = [...(lineup || [])].sort((a, b) => (b.points || 0) - (a.points || 0));
   const w = Math.min(18, Math.max(8, ...sorted.map((p) => (p.lastName || "").length)));
   const lines = sorted.map((p) => {
@@ -60,16 +60,25 @@ export function lineupEmbed(leagueName, user, day, lineup, totalPoints) {
     const sign = p.points > 0 ? "+" : "";
     return `${pad(name, w)}  ${padL(`${sign}${p.points || 0}`, 5)}`;
   });
-  const desc = sorted.length
-    ? `**${user.name}** · Spieltag ${day}\n\`\`\`\n${lines.join("\n")}\n\`\`\``
-    : "_Keine Aufstellung verfügbar._";
-  return new EmbedBuilder()
+
+  let desc;
+  if (sorted.length) {
+    desc = `**${user.name}** · Spieltag ${day}\n\`\`\`\n${lines.join("\n")}\n\`\`\``;
+  } else if (rawSample) {
+    // Debug-Modus: zeige rohes Response-Schema, damit wir die Feldnamen finden
+    desc = `**${user.name}** · Spieltag ${day}\n\n_Aufstellung leer — Kickbase-Response-Schema:_\n\`\`\`json\n${rawSample.slice(0, 1500)}\n\`\`\``;
+  } else {
+    desc = "_Keine Aufstellung verfügbar._";
+  }
+
+  const embed = new EmbedBuilder()
     .setTitle(`⚽ Aufstellung — ${user.name}`)
     .setDescription(desc)
-    .addFields({ name: "Gesamtpunkte", value: String(totalPoints || 0), inline: true })
     .setColor(COLORS.lineup)
     .setTimestamp(new Date())
     .setFooter({ text: `${leagueName} · Spieltag ${day}` });
+  if (sorted.length) embed.addFields({ name: "Gesamtpunkte", value: String(totalPoints || 0), inline: true });
+  return embed;
 }
 
 export function errorEmbed(message) {

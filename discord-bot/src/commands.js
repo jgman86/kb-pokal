@@ -118,8 +118,8 @@ export async function handleCommand(interaction, config) {
       const members = await membersOf(league.id);
       const user = members.find((m) => m.id === userIdOrName) || members.find((m) => m.name.toLowerCase() === userIdOrName.toLowerCase());
       if (!user) return interaction.editReply({ embeds: [errorEmbed(`Manager "${userIdOrName}" in ${league.name} nicht gefunden`)] });
-      const { lineup, totalPoints } = await kb.getLineup(league.id, user.id, day);
-      return interaction.editReply({ embeds: [lineupEmbed(league.name, user, day, lineup, totalPoints)] });
+      const { lineup, totalPoints, _rawSample } = await kb.getLineup(league.id, user.id, day);
+      return interaction.editReply({ embeds: [lineupEmbed(league.name, user, day, lineup, totalPoints, _rawSample)] });
     }
   } catch (e) {
     console.error(`/${commandName} failed:`, e);

@@ -85,43 +85,83 @@ export async function listMembers(leagueId) {
   };
 }
 
+function rankByPoints(rows) {
+  // Stabil-sortieren: höchste Punkte oben, bei Gleichstand alphabetisch
+  rows.sort((a, b) => (b.points - a.points) || a.name.localeCompare(b.name));
+  rows.forEach((r, i) => { r.rank = i + 1; });
+  return rows;
+}
+
 export async function getStandings(leagueId) {
-  // Saison-Ranking (ohne dayNumber)
   const raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
   const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
-  return arr.map((m, i) => ({
-    rank: m.shr ?? m.rank ?? i + 1,
+  const rows = arr.map((m) => ({
     id: String(m.i || m.id || m.userId || ""),
     name: m.n || m.name || "?",
     points: Number(m.sp ?? m.seasonPoints ?? m.tp ?? m.totalPoints ?? m.p ?? 0),
     image: m.uim || "",
   })).filter((m) => m.id);
+  return rankByPoints(rows);
 }
 
 export async function getMatchdayPoints(leagueId, dayNumber) {
   const raw = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking?dayNumber=${encodeURIComponent(dayNumber)}`);
   const arr = raw.us || raw.users || raw.ranking || raw.rk || (Array.isArray(raw) ? raw : []);
-  return arr.map((m, i) => ({
-    rank: m.shr ?? m.rank ?? i + 1,
+  const rows = arr.map((m) => ({
     id: String(m.i || m.id || m.userId || ""),
     name: m.n || m.name || "?",
     points: Number(m.sp ?? m.mdp ?? m.matchdayPoints ?? m.p ?? 0),
   })).filter((m) => m.id);
+  return rankByPoints(rows);
+}
+
+// Findet rekursiv das erste Array, dessen Objekte wie Spieler aussehen
+// (haben einen Namen UND eine Punktzahl ODER eine Position).
+function findPlayerArray(node, depth = 0) {
+  if (!node || depth > 4) return null;
+  if (Array.isArray(node)) {
+    if (node.length > 0 && typeof node[0] === "object" && node[0] !== null) {
+      const sample = node[0];
+      const hasName = sample.fn || sample.ln || sample.n || sample.name || sample.lastName;
+      const hasNumeric = sample.tp != null || sample.p != null || sample.mdp != null || sample.points != null || sample.totalPoints != null || sample.pos != null || sample.position != null;
+      if (hasName && hasNumeric) return node;
+    }
+    for (const item of node) {
+      const r = findPlayerArray(item, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (typeof node === "object") {
+    for (const key of Object.keys(node)) {
+      const r = findPlayerArray(node[key], depth + 1);
+      if (r) return r;
+    }
+  }
+  return null;
 }
 
 export async function getLineup(leagueId, userId, dayNumber) {
   const data = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/users/${encodeURIComponent(userId)}/teamcenter?dayNumber=${encodeURIComponent(dayNumber)}`);
-  const rawLineup = data.lineup || data.players || data.it || data.squad || data.pl || data.ap || [];
+  // Bekannte Wrapper zuerst, dann Tiefen-Suche als Fallback
+  const candidates = [data.lineup, data.players, data.it, data.squad, data.pl, data.ap, data.tm?.players, data.t?.players, data.tm?.tps, data.psl, data.fl];
+  let rawLineup = candidates.find((c) => Array.isArray(c) && c.length > 0);
+  if (!rawLineup) rawLineup = findPlayerArray(data) || [];
+
   const lineup = rawLineup.map((p) => ({
     id: String(p.i || p.id || ""),
     firstName: p.fn || p.firstName || "",
     lastName: p.ln || p.lastName || p.n || p.name || "?",
-    number: p.nr || p.number || null,
-    points: Number(p.tp ?? p.totalPoints ?? p.p ?? p.points ?? p.mdp ?? 0),
+    number: p.nr || p.number || p.shn || null,
+    position: p.pos || p.position || null,
+    points: Number(p.tp ?? p.totalPoints ?? p.p ?? p.points ?? p.mdp ?? p.lp ?? 0),
     status: p.st || p.status || null,
   }));
   const totalPoints = Number(data.totalPoints ?? data.tp ?? data.sp ?? data.pt ?? lineup.reduce((a, x) => a + (x.points || 0), 0));
-  return { lineup, totalPoints };
+
+  // Wenn nichts geparsed wurde, raw-Sample mitgeben damit wir das Schema sehen
+  const _rawSample = lineup.length === 0 ? JSON.stringify(data).slice(0, 1500) : undefined;
+  return { lineup, totalPoints, _rawSample };
 }
 
 export async function getCurrentMatchday() {
