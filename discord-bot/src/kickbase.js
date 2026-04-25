@@ -110,12 +110,16 @@ export async function getStandings(leagueId) {
   return rankByPoints(rows);
 }
 
+// Spieltag-Punkte über zwei verschiedene Endpoints versucht — der erste der
+// nicht-leere Daten liefert wird genommen. Hintergrund: /ranking?dayNumber=X
+// liefert für vergangene Spieltage konsistent mdp=0, /performance kann je
+// nach Permissions auch leer kommen.
 export async function getMatchdayPoints(leagueId, dayNumber) {
   const day = Number(dayNumber);
 
-  // 1. Manager-Liste von /ranking (ohne dayNumber, das wäre nur die Saison-Tabelle)
-  const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
-  const managers = (ranking.us || []).map((m) => ({
+  // 1. Manager-Liste + irgendeine User-ID für die teamcenter-Path
+  const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`).catch(() => null);
+  const managers = ((ranking && ranking.us) || []).map((m) => ({
     id: String(m.i || ""),
     name: m.n || "?",
     image: m.uim || "",
@@ -125,21 +129,44 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
     return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0 } });
   }
 
-  // 2. Pro Manager /performance abfragen — dort sind die echten Spieltag-für-Spieltag mdp
+  // ─── Strategie A: /teamcenter?dayNumber=X
+  // Liefert (laut Doku) alle Manager der Liga mit ihren mdp für den Tag.
+  const tc = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/users/${encodeURIComponent(managers[0].id)}/teamcenter?dayNumber=${day}`).catch((e) => ({ __error: e.message }));
+  if (tc && !tc.__error && Array.isArray(tc.us)) {
+    const byId = new Map();
+    for (const u of tc.us) byId.set(String(u.i || ""), { name: u.unm || u.n, mdp: Number(u.mdp || 0) });
+    const rows = managers.map((m) => {
+      const tcEntry = byId.get(m.id);
+      return { ...m, points: tcEntry?.mdp ?? 0 };
+    });
+    const nonZero = rows.filter((r) => r.points > 0).length;
+    if (nonZero > 0 || rows.length > 0) {
+      if (nonZero === 0) console.warn(`[KB] teamcenter day=${day}: alle mdp=0 (vermutlich zukünftig).`);
+      return Object.assign(rankByPoints(rows), { _meta: { source: "teamcenter", requestedDay: day, total: rows.length, nonZero, tcCount: tc.us.length } });
+    }
+  } else if (tc?.__error) {
+    console.warn(`[KB] /teamcenter day=${day} failed: ${tc.__error}. Fallback zu /performance...`);
+  }
+
+  // ─── Strategie B: /managers/{id}/performance (Fan-out)
+  // Mit detailliertem Error-Logging, damit wir merken warum es ggf. leer kommt.
+  let perfFailures = 0;
+  let perfSampleStructure = null;
   const perfPromises = managers.map((m) =>
-    get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(m.id)}/performance`).catch(() => null),
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/managers/${encodeURIComponent(m.id)}/performance`)
+      .then((r) => { if (!perfSampleStructure && r) perfSampleStructure = Object.keys(r).slice(0, 8); return r; })
+      .catch((e) => { perfFailures++; if (perfFailures === 1) console.warn(`[KB] /performance ${m.id} failed: ${e.message}`); return null; }),
   );
   const perfs = await Promise.all(perfPromises);
 
-  // 3. Pro Manager den angefragten Tag in der jüngsten Saison finden
   function pointsForDay(perf) {
     if (!perf || !Array.isArray(perf.it)) return 0;
     let bestDate = "", bestPoints = 0;
     for (const season of perf.it) {
-      for (const ph of season.it || []) {
+      for (const ph of (season.it || season.ph || [])) {
         if (Number(ph.day) !== day) continue;
         const md = ph.md || "";
-        if (md > bestDate) { bestDate = md; bestPoints = Number(ph.mdp || 0); }
+        if (md >= bestDate) { bestDate = md; bestPoints = Number(ph.mdp ?? ph.p ?? 0); }
       }
     }
     return bestPoints;
@@ -148,9 +175,9 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
   const rows = managers.map((m, i) => ({ ...m, points: pointsForDay(perfs[i]) }));
   const nonZero = rows.filter((r) => r.points > 0).length;
   if (rows.length > 0 && nonZero === 0) {
-    console.warn(`[KB] day=${day}: ${rows.length} Manager, alle mdp=0 nach /performance-Lookup. Spieltag wirklich nicht gespielt oder zukünftig?`);
+    console.warn(`[KB] /performance day=${day}: ${rows.length} Manager, alle mdp=0. Failures=${perfFailures}, sample-keys=${JSON.stringify(perfSampleStructure)}`);
   }
-  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero } });
+  return Object.assign(rankByPoints(rows), { _meta: { source: "managers/performance", requestedDay: day, total: rows.length, nonZero, failures: perfFailures } });
 }
 
 // Lineup für einen Manager an einem Spieltag. Drei Calls nötig (parallel
