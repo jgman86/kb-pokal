@@ -86,16 +86,18 @@ export async function handleCommand(interaction, config) {
     const leagueOpt = interaction.options.getString?.("league");
     const league = resolveLeague(config, leagueOpt);
 
+    const tableOpts = { relegationCount: league.relegationCount, promotionCount: league.promotionCount, titleHolder: league.titleHolder };
+
     if (commandName === "standings") {
       const rows = await kb.getStandings(league.id);
-      return interaction.editReply({ embeds: [standingsEmbed(league.name, rows, { relegationCount: league.relegationCount, promotionCount: league.promotionCount })] });
+      return interaction.editReply({ embeds: [standingsEmbed(league.name, rows, tableOpts)] });
     }
 
     if (commandName === "matchday") {
       let day = interaction.options.getInteger("day");
       if (day == null) day = (await kb.getCurrentMatchday()) ?? 1;
       const rows = await kb.getMatchdayPoints(league.id, day);
-      return interaction.editReply({ embeds: [matchdayEmbed(league.name, day, rows, { relegationCount: league.relegationCount, promotionCount: league.promotionCount })] });
+      return interaction.editReply({ embeds: [matchdayEmbed(league.name, day, rows, tableOpts)] });
     }
 
     if (commandName === "points") {

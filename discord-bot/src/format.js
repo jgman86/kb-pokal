@@ -25,9 +25,13 @@ const ANSI = {
 const DEFAULT_TOP_N = 3;
 const DEFAULT_BOT_N = 3;
 
+const isTitleHolder = (row, titleHolder) =>
+  titleHolder && row.name && row.name.toLowerCase() === String(titleHolder).toLowerCase();
+
 // Markiert die ersten topN grün (1. zusätzlich gold + 🏆),
-// die letzten botN rot, mit Trennlinien zwischen Zonen.
-function tableBlock(rows, { topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N } = {}) {
+// die letzten botN rot, Trennlinien zwischen Zonen,
+// Titelverteidiger (Vorjahressieger) bekommt 👑 (überschreibt 🏆 wenn er aktuell auch führt).
+function tableBlock(rows, { topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N, titleHolder } = {}) {
   if (!rows.length) return "_(keine Daten)_";
   const w = Math.min(22, Math.max(8, ...rows.map((r) => r.name.length)));
   const N = rows.length;
@@ -38,9 +42,11 @@ function tableBlock(rows, { topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N } = {}) {
   rows.forEach((r, i) => {
     let color = "";
     let prefix = "  ";
-    if (i === 0) { color = ANSI.gold; prefix = "🏆"; }
-    else if (i < topN) { color = ANSI.green; prefix = "  "; }
-    else if (hasGap && i >= N - botN) { color = ANSI.red; prefix = "  "; }
+    const tv = isTitleHolder(r, titleHolder);
+    if (i === 0) { color = ANSI.gold; prefix = tv ? "👑" : "🏆"; }
+    else if (i < topN) { color = ANSI.green; prefix = tv ? "👑" : "  "; }
+    else if (hasGap && i >= N - botN) { color = ANSI.red; prefix = tv ? "👑" : "  "; }
+    else if (tv) { prefix = "👑"; }
     const reset = color ? ANSI.reset : "";
     const rank = padL(r.rank, 2);
     const name = pad(r.name, w);
@@ -53,36 +59,40 @@ function tableBlock(rows, { topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N } = {}) {
   return "```ansi\n" + lines.join("\n") + "\n```";
 }
 
-function legendLines(rows, { isMatchday = false, topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N } = {}) {
+function legendLines(rows, { isMatchday = false, topN = DEFAULT_TOP_N, botN = DEFAULT_BOT_N, titleHolder } = {}) {
   if (!rows.length) return "";
   const N = rows.length;
   const champ = rows[0];
   const top = rows.slice(1, topN).map((r) => r.name).filter(Boolean);
   const bot = N > topN + botN ? rows.slice(N - botN).map((r) => r.name) : [];
+  const tvRow = titleHolder ? rows.find((r) => isTitleHolder(r, titleHolder)) : null;
   const lines = [];
   lines.push(`🏆 **${isMatchday ? "Spieltagssieger" : "Pokalsieger"}:** ${champ.name} _(${champ.points} Pkt)_`);
+  if (tvRow) lines.push(`👑 **Titelverteidiger:** ${tvRow.name} _(akt. Platz ${tvRow.rank})_`);
   if (top.length) lines.push(`🟢 **${isMatchday ? `Top ${topN}` : "Aufstieg"}:** ${top.join(", ")}`);
   if (bot.length) lines.push(`🔴 **${isMatchday ? `Bottom ${botN}` : "Abstieg"}:** ${bot.join(", ")}`);
   return lines.join("\n");
 }
 
 export function standingsEmbed(leagueName, rows, opts = {}) {
-  const { relegationCount = DEFAULT_BOT_N, promotionCount = DEFAULT_TOP_N } = opts;
+  const { relegationCount = DEFAULT_BOT_N, promotionCount = DEFAULT_TOP_N, titleHolder } = opts;
   const top25 = rows.slice(0, 25);
+  const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
   return new EmbedBuilder()
     .setTitle(`🏆 Saison-Tabelle — ${leagueName}`)
-    .setDescription(`${legendLines(top25, { topN: promotionCount, botN: relegationCount })}\n\n${tableBlock(top25, { topN: promotionCount, botN: relegationCount })}`)
+    .setDescription(`${legendLines(top25, tableOpts)}\n\n${tableBlock(top25, tableOpts)}`)
     .setColor(COLORS.standings)
     .setTimestamp(new Date())
     .setFooter({ text: `${rows.length} Manager` });
 }
 
 export function matchdayEmbed(leagueName, day, rows, opts = {}) {
-  const { relegationCount = DEFAULT_BOT_N, promotionCount = DEFAULT_TOP_N } = opts;
+  const { relegationCount = DEFAULT_BOT_N, promotionCount = DEFAULT_TOP_N, titleHolder } = opts;
   const top25 = rows.slice(0, 25);
+  const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
   return new EmbedBuilder()
     .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
-    .setDescription(`${legendLines(top25, { isMatchday: true, topN: promotionCount, botN: relegationCount })}\n\n${tableBlock(top25, { topN: promotionCount, botN: relegationCount })}`)
+    .setDescription(`${legendLines(top25, { ...tableOpts, isMatchday: true })}\n\n${tableBlock(top25, tableOpts)}`)
     .setColor(COLORS.matchday)
     .setTimestamp(new Date())
     .setFooter({ text: `${rows.length} Manager` });

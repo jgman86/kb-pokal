@@ -32,7 +32,7 @@ async function runJob(client, sched, league) {
   if (!channel || !channel.isTextBased()) throw new Error(`Channel ${league.channelId} nicht erreichbar oder kein Text-Channel`);
 
   try {
-    const opts = { relegationCount: league.relegationCount, promotionCount: league.promotionCount };
+    const opts = { relegationCount: league.relegationCount, promotionCount: league.promotionCount, titleHolder: league.titleHolder };
     if (sched.task === "standings") {
       const rows = await kb.getStandings(league.id);
       await channel.send({ embeds: [standingsEmbed(league.name, rows, opts)] });
