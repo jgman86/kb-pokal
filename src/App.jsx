@@ -112,6 +112,15 @@ function Tournament({ session, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [view, setView] = useState("overview");
+  // Desktop-Erkennung: breite Views (Turnierbaum, Teilnehmer) nutzen den Platz,
+  // Formular-Views bleiben als lesbare schmale Spalte. Mobile unverändert.
+  const [isWide, setIsWide] = useState(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1100px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1100px)");
+    const fn = (e) => setIsWide(e.matches);
+    mq.addEventListener("change", fn);
+    return () => mq.removeEventListener("change", fn);
+  }, []);
   const [np, setNp] = useState({ name: "", league: "", marketValue: "", avatar: "", seed: "" });
   const [editSc, setEditSc] = useState(null);
   const [scInp, setScInp] = useState({ s1: "", s2: "", leg: 1 });
@@ -681,7 +690,7 @@ function Tournament({ session, onLogout }) {
   ];
 
   return (
-    <div style={s.app}><style>{CSS}</style>
+    <div style={{ ...s.app, ...(isWide && (view === "bracket" || view === "players" || view === "stats") ? { maxWidth: 1160 } : {}) }}><style>{CSS}</style>
       <header style={s.hdr}>
         <div style={s.hdrI}>
           <div style={{ fontSize: 34, marginBottom: 4 }}>🏆</div>
@@ -839,7 +848,7 @@ function Tournament({ session, onLogout }) {
         </div>}
 
         {/* ═══ PLAYERS ═══ */}
-        {view === "players" && data.status === "setup" && isAdmin && <div style={s.fade}>
+        {view === "players" && data.status === "setup" && isAdmin && <div style={{ ...s.fade, ...(isWide ? { display: "grid", gridTemplateColumns: "minmax(0,420px) minmax(0,1fr)", gap: 12, alignItems: "start" } : {}) }}>
           <div style={s.card} className="card">
             <h2 style={s.cT}>Teilnehmer</h2>
             <div style={s.ar}>
@@ -876,7 +885,7 @@ function Tournament({ session, onLogout }) {
               )}
             </div>}
           </div>
-          {data.players.length > 0 && <div style={{ ...s.card, marginTop: 12 }} className="card">
+          {data.players.length > 0 && <div style={{ ...s.card, marginTop: isWide ? 0 : 12 }} className="card">
             <h3 style={s.cS}>{data.players.length} Teilnehmer</h3>
             {kbLeagues.length > 0 && <p style={{ ...s.info, marginBottom: 8 }}>⚡ Kickbase-Mapping: Liga wählen → User aus Dropdown (wird nach Liga-Wahl geladen)</p>}
             {data.players.map((p, i) => (
