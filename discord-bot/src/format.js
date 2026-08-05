@@ -165,6 +165,62 @@ export function lineupEmbed(leagueName, user, day, lineup, totalPoints, rawSampl
   return embed;
 }
 
+// Liga-Namen zu kompakten Tags kürzen: "Aktives Ligasystem 1. Liga" → L1,
+// "4. Liga A" → L4A, "Champions League" → CL. Fallback: Initialen.
+export function shortLiga(name) {
+  if (!name) return "";
+  const s = String(name);
+  if (/champions/i.test(s)) return "CL";
+  const m = s.match(/(\d+)\.?\s*liga\s*([A-Za-z])?/i);
+  if (m) return `L${m[1]}${m[2] ? m[2].toUpperCase() : ""}`;
+  return s.trim().split(/\s+/).map((w) => w[0]).join("").toUpperCase().slice(0, 3);
+}
+
+// 🌟 LEGENDS — ligaübergreifende Spieltags-Rangliste für Ausnahme-Spieltage.
+// rows: global sortierte [{name, points, liga}], failed: Liga-Namen ohne Daten.
+export function legendsEmbed(day, rows, { failed = [] } = {}) {
+  if (!rows.length) {
+    return new EmbedBuilder()
+      .setTitle(`🌟 LEGENDS — Spieltag ${day}`)
+      .setDescription("_Keine Punkte-Daten für diesen Spieltag gefunden._")
+      .setColor(0x94a3b8)
+      .setTimestamp(new Date());
+  }
+  const top = rows.slice(0, 25);
+  const w = Math.min(18, Math.max(8, ...top.map((r) => r.name.length)));
+  const wl = Math.max(2, ...top.map((r) => (r.liga || "").length));
+  const medals = ["🥇", "🥈", "🥉"];
+
+  const lines = top.map((r, i) => {
+    const prefix = medals[i] || "  ";
+    const color = i < 3 ? ANSI.gold : i < 10 ? ANSI.green : "";
+    const reset = color ? ANSI.reset : "";
+    return `${prefix} ${color}${padL(i + 1, 2)}. ${pad(r.name, w)} ${pad(r.liga || "", wl)}  ${padL(r.points, 5)}${reset}`;
+  });
+  const table = "```ansi\n" + lines.join("\n") + "\n```";
+
+  const n = rows.length;
+  const leagueCount = new Set(rows.map((r) => r.liga)).size;
+  const avg = rows.reduce((s, r) => s + (r.points || 0), 0) / n;
+  const over800 = rows.filter((r) => (r.points || 0) >= 800).length;
+  const king = rows[0];
+
+  const intro = [
+    `🔥 **Ein Spieltag für die Geschichtsbücher!**`,
+    `👑 **Spieltagskönig:** ${king.name} \`${king.liga}\` — **${king.points} Pkt**`,
+    `🌍 ${n} Manager aus ${leagueCount} Ligen · Ø **${avg.toFixed(0)} Pkt**${over800 ? ` · ${over800}× über 800` : ""}`,
+  ].join("\n");
+
+  const failNote = failed.length ? `\n_⚠️ Ohne Daten: ${failed.join(", ")}_` : "";
+
+  return new EmbedBuilder()
+    .setTitle(`🌟 LEGENDS — Spieltag ${day} 🌟`)
+    .setDescription(`${intro}\n\n${table}${failNote}`)
+    .setColor(0xfbbf24)
+    .setTimestamp(new Date())
+    .setFooter({ text: `LEGENDS · alle Ligen · Spieltag ${day}` });
+}
+
 export function errorEmbed(message) {
   return new EmbedBuilder()
     .setTitle("⚠️ Fehler")
@@ -383,6 +439,7 @@ export function helpEmbed() {
         "**/points** `<league> <user>` — Saison- + Spieltagspunkte eines Managers",
         "**/lineup** `<league> <user> [day]` — 11er-Aufstellung mit Einzelpunkten",
         "**/stats** `<league> [user] [last]` — Stats über Zeitraum mit Linechart (ohne user → Liga-Übersicht)",
+        "**/legends** `[day]` — 🌟 Ligaübergreifende Spieltags-Rangliste über alle Ligen",
         "**/run-schedule** `<job>` — _(Admin)_ Geplanten Job sofort ausführen",
         "**/help** — Diese Übersicht",
         "",
