@@ -74,20 +74,24 @@ function renderMatchesBlock(matches) {
   return "```\n" + lines.join("\n") + "\n```";
 }
 
-// Mini-Bracket für Auslosung: zeigt die Paarungen als Baum-Fragmente
-function renderDrawBlock(pairings) {
-  const maxName = Math.max(8, ...pairings.flatMap((p) => [p.p1, p.p2].map((n) => n.length)));
-  const w = Math.min(18, maxName);
-  const lines = [];
-  pairings.forEach((p, i) => {
-    const suffix1 = p.p1Liga ? ` (${p.p1Liga})` : "";
-    const suffix2 = p.p2Liga ? ` (${p.p2Liga})` : "";
-    lines.push(`  ${pad(p.p1, w)}${suffix1}`);
-    lines.push(`        vs.`);
-    lines.push(`  ${pad(p.p2, w)}${suffix2}`);
-    if (i < pairings.length - 1) lines.push(lineOf("·", 24));
-  });
-  return "```\n" + lines.join("\n") + "\n```";
+// Liga-Namen zu kompakten Tags kürzen: "Aktives Ligasystem 1. Liga" → L1,
+// "4. Liga A" → L4A, "Champions League" → CL. Fallback: Initialen.
+function shortLiga(name) {
+  if (!name) return "";
+  const s = String(name);
+  if (/champions/i.test(s)) return "CL";
+  const m = s.match(/(\d+)\.?\s*liga\s*([A-Za-z])?/i);
+  if (m) return `L${m[1]}${m[2] ? m[2].toUpperCase() : ""}`;
+  return s.trim().split(/\s+/).map((w) => w[0]).join("").toUpperCase().slice(0, 3);
+}
+const ligaTag = (name) => (name ? ` \`${shortLiga(name)}\`` : "");
+
+// Auslosung: eine Markdown-Zeile pro Duell — kein Codeblock, keine
+// festen Spaltenbreiten, dadurch keine kaputten Umbrüche auf Mobile.
+function renderDrawLines(pairings) {
+  return pairings
+    .map((p) => `⚔️ **${p.p1}**${ligaTag(p.p1Liga)}  vs  **${p.p2}**${ligaTag(p.p2Liga)}`)
+    .join("\n");
 }
 
 function buildEmbed(event, p) {
@@ -99,12 +103,12 @@ function buildEmbed(event, p) {
 
   if (event === "draw") {
     const pairings = p.pairings || [];
-    const byeTxt = p.bye ? `\n🎫 **Freilos:** ${p.bye}` : "";
-    const header = `📅 **${md || "Spieltag steht noch aus"}** · ${pairings.length} Duell${pairings.length === 1 ? "" : "e"}${p.remaining != null ? ` · ${p.remaining} Teilnehmer noch dabei` : ""}${byeTxt}`;
+    const byeTxt = p.bye ? `\n\n🎟️ **Freilos:** ${p.bye}` : "";
+    const header = `📅 **${md || "Spieltag steht noch aus"}** · ${pairings.length} Duell${pairings.length === 1 ? "" : "e"}${p.remaining != null ? ` · ${p.remaining} noch dabei` : ""}`;
     return {
       title: `🎲 Auslosung — ${p.roundName}`,
       url: appUrl,
-      description: `${header}\n\n${renderDrawBlock(pairings)}\n🔗 [Live-Turnierbaum öffnen](${appUrl})`,
+      description: `${header}\n\n${renderDrawLines(pairings)}${byeTxt}\n\n🔗 [Live-Turnierbaum öffnen](${appUrl})`,
       color, timestamp: ts,
       footer: { text: cup },
     };
@@ -113,8 +117,8 @@ function buildEmbed(event, p) {
   if (event === "result") {
     const prog = p.progress ? ` · ${p.progress.done}/${p.progress.total} Duelle gespielt` : "";
     const tiebreak = p.tiebreak ? `\n⚖️ _Entschieden durch: ${p.tiebreak}_` : "";
-    const ligaP1 = p.p1Liga ? ` _(${p.p1Liga})_` : "";
-    const ligaP2 = p.p2Liga ? ` _(${p.p2Liga})_` : "";
+    const ligaP1 = ligaTag(p.p1Liga);
+    const ligaP2 = ligaTag(p.p2Liga);
     return {
       title: `⚔️ ${p.p1} ${p.s1} : ${p.s2} ${p.p2}`,
       url: appUrl,
@@ -146,7 +150,7 @@ function buildEmbed(event, p) {
   }
 
   if (event === "winner") {
-    const ligaSuf = p.winnerLiga ? ` _(${p.winnerLiga})_` : "";
+    const ligaSuf = ligaTag(p.winnerLiga);
     return {
       title: `👑 POKALSIEGER: ${p.winner}!`,
       url: appUrl,
