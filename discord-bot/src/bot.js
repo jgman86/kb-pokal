@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleCommand, handleAutocomplete } from "./commands.js";
+import { handleTippButton } from "./tippspiel.js";
 import { startSchedules } from "./scheduler.js";
 import * as kb from "./kickbase.js";
 
@@ -58,6 +59,7 @@ async function main() {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand()) await handleCommand(interaction, config);
     else if (interaction.isAutocomplete()) await handleAutocomplete(interaction, config);
+    else if (interaction.isButton() && interaction.customId.startsWith("tipp|")) await handleTippButton(interaction).catch((e) => console.error("[Tipp] button error:", e));
   });
 
   client.on(Events.Error, (e) => console.error("[Bot] Discord error:", e));

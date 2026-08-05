@@ -639,22 +639,7 @@ function Tournament({ session, onLogout }) {
     if (r === "granted") notify("Kickbase Pokal", "Benachrichtigungen aktiviert!");
   };
 
-  // ── Predictions
-  const submitPrediction = (pairingId, predictedWinnerId) => {
-    if (!identity) { alert("Bitte erst einen Nickname in den Einstellungen festlegen."); return; }
-    const rounds = [...data.rounds];
-    const ri = rounds.findIndex((r) => r.roundNumber === data.currentRound);
-    if (ri < 0) return;
-    const prs = [...rounds[ri].pairings];
-    const pi = prs.findIndex((p) => p.id === pairingId);
-    if (pi < 0) return;
-    if (prs[pi].score1 != null) return; // Locked after first score
-    const existing = (prs[pi].predictions || []).filter((x) => x.userName.toLowerCase() !== identity.toLowerCase());
-    prs[pi] = { ...prs[pi], predictions: [...existing, { id: generateId(), userName: identity, predictedWinnerId, ts: new Date().toISOString() }] };
-    rounds[ri] = { ...rounds[ri], pairings: prs };
-    save({ ...data, rounds });
-  };
-
+  // Tipps laufen jetzt über das Discord-Tippspiel (/tipp) — hier nur noch Chat.
   const submitComment = (pairingId, txt) => {
     if (!identity || !txt.trim()) return;
     const rounds = [...data.rounds];
@@ -980,8 +965,6 @@ function Tournament({ session, onLogout }) {
             const ed = editSc === p.id;
             const canEdit = canEditScore(p);
             const expanded = expandedMatch === p.id;
-            const myPrediction = (p.predictions || []).find((x) => x.userName.toLowerCase() === identity.toLowerCase());
-            const predStats = (p.predictions || []).reduce((a, pr) => { a[pr.predictedWinnerId] = (a[pr.predictedWinnerId] || 0) + 1; return a; }, {});
             return (
               <div key={p.id} style={s.mC}>
                 <div style={s.mI}>
@@ -1036,28 +1019,11 @@ function Tournament({ session, onLogout }) {
                 )}
 
                 <button style={{ ...s.bTx, marginTop: 6, color: "#64748b" }} onClick={() => setExpandedMatch(expanded ? null : p.id)}>
-                  {expanded ? "▲ zuklappen" : `▼ Tipps (${(p.predictions || []).length}) · Chat (${(p.comments || []).length})`}
+                  {expanded ? "▲ zuklappen" : `▼ Chat (${(p.comments || []).length})`}
                 </button>
 
                 {expanded && (
                   <div style={{ marginTop: 8, padding: 10, background: "#0d1520", borderRadius: 10 }}>
-                    {/* Predictions */}
-                    {!d && cr.status === "active" && (
-                      <div style={{ marginBottom: 10 }}>
-                        <label style={s.lb}>Dein Tipp</label>
-                        <div style={s.chipRow}>
-                          <span style={{ ...s.chip, ...(myPrediction?.predictedWinnerId === p.player1Id ? s.chipA : {}) }} onClick={() => submitPrediction(p.id, p.player1Id)}>{p1?.name}</span>
-                          <span style={{ ...s.chip, ...(myPrediction?.predictedWinnerId === p.player2Id ? s.chipA : {}) }} onClick={() => submitPrediction(p.id, p.player2Id)}>{p2?.name}</span>
-                        </div>
-                      </div>
-                    )}
-                    {(p.predictions || []).length > 0 && (
-                      <div style={{ marginBottom: 10, fontSize: 11, color: "#94a3b8" }}>
-                        {Object.entries(predStats).map(([pid, c]) => (
-                          <span key={pid} style={{ marginRight: 8 }}>{gp(pid)?.name}: <b style={{ color: "#00e676" }}>{c}</b></span>
-                        ))}
-                      </div>
-                    )}
                     {/* Comments */}
                     <label style={s.lb}>Chat / Trash-Talk</label>
                     <div style={{ maxHeight: 200, overflowY: "auto", marginBottom: 6 }}>
@@ -1164,7 +1130,7 @@ function Tournament({ session, onLogout }) {
         {/* ═══ SETTINGS ═══ */}
         {view === "settings" && <div style={s.fade}>
           <div style={s.card} className="card">
-            <h3 style={s.cS}>🪪 Identität (für Tipps & Chat)</h3>
+            <h3 style={s.cS}>🪪 Identität (für den Chat)</h3>
             <div style={{ display: "flex", gap: 6 }}>
               <input style={{ ...s.inp, flex: 1 }} placeholder="Dein Name (wie bei Teilnehmer-Eintrag)" value={identityInput} onChange={(e) => setIdentityInput(e.target.value)} />
               <button className="btn" style={s.bS} onClick={saveIdentity}>💾</button>
