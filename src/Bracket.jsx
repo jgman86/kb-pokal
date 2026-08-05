@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useMemo } from "react";
+import { useRef, useEffect, useMemo } from "react";
 import { bk } from "./styles.js";
 
 // Avatar circle (used inside bracket slots)
@@ -18,29 +18,26 @@ const COL_W = 200;
 const COL_GAP = 28;
 const SLOT_H = 70;
 const SLOT_GAP = 14;
+const HEADER_H = 52;
 
 export function Bracket({ data, gp, onMatchClick }) {
   const rounds = data.rounds || [];
   const W = data.status === "finished" ? data.players.find((p) => !p.eliminated) : null;
   const cols = W ? rounds.length + 1 : rounds.length;
 
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [drag, setDrag] = useState(null);
-  const wrapRef = useRef(null);
-  const viewRef = useRef(null);
+  const scrollRef = useRef(null);
 
-  // Compute slot positions per round
+  // Compute slot positions per round — natural (readable) size, no scaling.
   const layout = useMemo(() => {
     const positions = []; // [col][pairIdx] -> {x, y, h}
     const rCols = rounds.map((r) => r.pairings.length || 1);
     const maxPairs = Math.max(1, ...rCols);
-    const canvasH = maxPairs * (SLOT_H + SLOT_GAP) + 60;
+    const canvasH = maxPairs * (SLOT_H + SLOT_GAP) + 20;
     rounds.forEach((r, ci) => {
       const n = r.pairings.length || 1;
-      const spacing = (canvasH - 60) / n;
+      const spacing = (canvasH - 20) / n;
       const arr = r.pairings.map((_, i) => {
-        const y = 30 + i * spacing + (spacing - SLOT_H) / 2;
+        const y = 10 + i * spacing + (spacing - SLOT_H) / 2;
         return { x: ci * (COL_W + COL_GAP), y, h: SLOT_H };
       });
       positions.push(arr);
@@ -48,7 +45,7 @@ export function Bracket({ data, gp, onMatchClick }) {
     if (W) {
       positions.push([{ x: rounds.length * (COL_W + COL_GAP), y: (canvasH - 80) / 2, h: 80 }]);
     }
-    return { positions, canvasH, canvasW: cols * (COL_W + COL_GAP) };
+    return { positions, canvasH, canvasW: cols * (COL_W + COL_GAP) - COL_GAP };
   }, [rounds, W, cols]);
 
   // Connector lines (SVG paths) between rounds
@@ -72,45 +69,29 @@ export function Bracket({ data, gp, onMatchClick }) {
     return out;
   }, [layout]);
 
-  const fit = () => {
-    const w = wrapRef.current?.clientWidth || 600;
-    const h = 320;
-    const zx = w / layout.canvasW;
-    const zy = h / layout.canvasH;
-    const z = Math.min(1, Math.min(zx, zy));
-    setZoom(z);
-    setPan({ x: 0, y: 0 });
-  };
-  useEffect(() => { fit(); /* eslint-disable-next-line */ }, [layout.canvasW, layout.canvasH]);
+  // Aktuelle Runde: erste aktive, sonst letzte (bzw. Sieger-Spalte)
+  const currentCol = useMemo(() => {
+    const ai = rounds.findIndex((r) => r.status === "active");
+    if (ai >= 0) return ai;
+    return W ? rounds.length : Math.max(0, rounds.length - 1);
+  }, [rounds, W]);
 
-  const onPointerDown = (e) => {
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    setDrag({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-  };
-  const onPointerMove = (e) => {
-    if (!drag) return;
-    setPan({ x: e.clientX - drag.x, y: e.clientY - drag.y });
-  };
-  const onPointerUp = (e) => {
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    setDrag(null);
-  };
-
-  // Wheel-Handler muss non-passive attached werden, damit preventDefault erlaubt ist.
-  // Nur mit Ctrl/Cmd (oder Pinch, Chrome setzt dann ctrlKey=true) eingreifen —
-  // normaler Scroll geht durch zur Seite, keine Warnings mehr.
-  useEffect(() => {
-    const el = viewRef.current;
+  const scrollToCurrent = (smooth = true) => {
+    const el = scrollRef.current;
     if (!el) return;
-    const handler = (e) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      setZoom((z) => Math.max(0.3, Math.min(2.5, z * factor)));
-    };
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
-  }, []);
+    const x = currentCol * (COL_W + COL_GAP) - (el.clientWidth - COL_W) / 2;
+    // Vertikal: erstes offenes Match der aktuellen Runde anpeilen
+    let y = 0;
+    const r = rounds[currentCol];
+    if (r) {
+      const oi = r.pairings.findIndex((p) => p.score1 == null || p.score2 == null);
+      const pos = layout.positions[currentCol]?.[Math.max(0, oi)];
+      if (pos) y = pos.y - (el.clientHeight - HEADER_H) / 2 + SLOT_H / 2;
+    }
+    el.scrollTo({ left: Math.max(0, x), top: Math.max(0, y), behavior: smooth ? "smooth" : "auto" });
+  };
+  // Beim Öffnen direkt zur aktuellen Runde springen
+  useEffect(() => { scrollToCurrent(false); /* eslint-disable-next-line */ }, [layout.canvasW]);
 
   if (!rounds.length) {
     return (
@@ -122,74 +103,76 @@ export function Bracket({ data, gp, onMatchClick }) {
   }
 
   return (
-    <div style={bk.wr} ref={wrapRef}>
+    <div style={bk.wr}>
       <div style={bk.ctrl}>
-        <button style={bk.ctrlBtn} title="Rein" onClick={() => setZoom((z) => Math.min(2.5, z * 1.15))}>+</button>
-        <button style={bk.ctrlBtn} title="Raus" onClick={() => setZoom((z) => Math.max(0.3, z * 0.85))}>−</button>
-        <button style={bk.ctrlBtn} title="Anpassen" onClick={fit}>⤢</button>
+        <button style={{ ...bk.ctrlBtn, width: "auto", padding: "0 10px", fontSize: 11 }} title="Zur aktuellen Runde" onClick={() => scrollToCurrent(true)}>● Aktuelle Runde</button>
       </div>
       <div
-        ref={viewRef}
+        ref={scrollRef}
         className="bracket-svg"
-        style={{ ...bk.sc, ...(drag ? bk.scGrab : {}) }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        style={{ ...bk.sc, maxHeight: `min(72vh, ${layout.canvasH + HEADER_H + 20}px)` }}
       >
-        <div style={{ ...bk.canvas, width: layout.canvasW, height: layout.canvasH, transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}>
-          <svg width={layout.canvasW} height={layout.canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-            {lines.map((l) => (
-              <path key={l.key} d={l.d} stroke="#1e3a2a" strokeWidth={1.5} fill="none" />
-            ))}
-          </svg>
-          {rounds.map((r, ri) => (
-            <div key={r.roundNumber} style={{ ...bk.col, left: ri * (COL_W + COL_GAP) }}>
-              <div style={bk.rl}>
+        <div style={{ width: layout.canvasW, position: "relative" }}>
+          {/* Sticky Runden-Header — bleibt beim vertikalen Scrollen sichtbar */}
+          <div style={{ ...bk.hdr, width: layout.canvasW, height: HEADER_H }}>
+            {rounds.map((r, ri) => (
+              <div key={r.roundNumber} style={{ ...bk.rl, position: "absolute", left: ri * (COL_W + COL_GAP), width: COL_W, ...(ri === currentCol ? bk.rlA : {}) }}>
                 <span style={{ ...bk.rn, color: r.status === "completed" ? "#64748b" : "#00e676" }}>{r.name}</span>
-                {r.matchday && <span style={bk.md}>{r.matchday}</span>}
-                <span style={{ ...bk.rs, color: r.status === "completed" ? "#334155" : "#00e67688" }}>
-                  {r.status === "completed" ? "abgeschlossen" : "aktiv"}
+                <span style={bk.md}>
+                  {r.matchday ? `${r.matchday} · ` : ""}
+                  <span style={{ color: r.status === "completed" ? "#334155" : "#00e67688", textTransform: "uppercase", letterSpacing: .8 }}>{r.status === "completed" ? "abgeschlossen" : "aktiv"}</span>
                 </span>
               </div>
-            </div>
-          ))}
-          {rounds.map((r, ri) => {
-            const poss = layout.positions[ri];
-            return r.pairings.map((p, i) => {
-              const pos = poss[i];
-              const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-              const d = p.score1 !== null && p.score2 !== null;
-              const w1 = p.winner === p.player1Id || (d && !p.winner && p.score1 > p.score2);
-              const w2 = p.winner === p.player2Id || (d && !p.winner && p.score2 > p.score1);
-              const t = d && !p.winner && p.score1 === p.score2;
-              const clickable = d && onMatchClick;
-              return (
-                <div key={p.id} style={{ position: "absolute", left: pos.x, top: pos.y, width: COL_W, height: pos.h }}>
-                  <div
-                    onClick={clickable ? (e) => { e.stopPropagation(); onMatchClick(p, r); } : undefined}
-                    style={{ ...bk.mb, borderColor: r.status === "active" ? "#00e67633" : "#1e293b", cursor: clickable ? "pointer" : "default" }}
-                    title={clickable ? "Aufstellungen anzeigen" : ""}
-                  >
-                    <Slot p={p1} win={w1} lose={d && !w1 && !t} tie={t} score={d ? p.score1 : null} />
-                    <Slot p={p2} win={w2} lose={d && !w2 && !t} tie={t} score={d ? p.score2 : null} />
-                  </div>
-                </div>
-              );
-            });
-          })}
-          {W && (
-            <div style={{ position: "absolute", left: rounds.length * (COL_W + COL_GAP), top: layout.positions[layout.positions.length - 1][0].y, width: COL_W }}>
-              <div style={bk.wb}>
-                <span style={{ fontSize: 30, lineHeight: 1, animation: "crownBounce 2s infinite" }}>👑</span>
-                <span style={bk.wn}>{W.name}</span>
-                {W.league && <span style={bk.wl}>{W.league}</span>}
+            ))}
+            {W && (
+              <div style={{ ...bk.rl, position: "absolute", left: rounds.length * (COL_W + COL_GAP), width: COL_W }}>
+                <span style={{ ...bk.rn, color: "#fbbf24" }}>Sieger</span>
               </div>
-            </div>
-          )}
+            )}
+          </div>
+          <div style={{ position: "relative", width: layout.canvasW, height: layout.canvasH }}>
+            <svg width={layout.canvasW} height={layout.canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+              {lines.map((l) => (
+                <path key={l.key} d={l.d} stroke="#1e3a2a" strokeWidth={1.5} fill="none" />
+              ))}
+            </svg>
+            {rounds.map((r, ri) => {
+              const poss = layout.positions[ri];
+              return r.pairings.map((p, i) => {
+                const pos = poss[i];
+                const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
+                const d = p.score1 !== null && p.score2 !== null;
+                const w1 = p.winner === p.player1Id || (d && !p.winner && p.score1 > p.score2);
+                const w2 = p.winner === p.player2Id || (d && !p.winner && p.score2 > p.score1);
+                const t = d && !p.winner && p.score1 === p.score2;
+                const clickable = d && onMatchClick;
+                return (
+                  <div key={p.id} style={{ position: "absolute", left: pos.x, top: pos.y, width: COL_W, height: pos.h }}>
+                    <div
+                      onClick={clickable ? (e) => { e.stopPropagation(); onMatchClick(p, r); } : undefined}
+                      style={{ ...bk.mb, borderColor: r.status === "active" ? "#00e67633" : "#1e293b", cursor: clickable ? "pointer" : "default" }}
+                      title={clickable ? "Aufstellungen anzeigen" : ""}
+                    >
+                      <Slot p={p1} win={w1} lose={d && !w1 && !t} tie={t} score={d ? p.score1 : null} />
+                      <Slot p={p2} win={w2} lose={d && !w2 && !t} tie={t} score={d ? p.score2 : null} />
+                    </div>
+                  </div>
+                );
+              });
+            })}
+            {W && (
+              <div style={{ position: "absolute", left: rounds.length * (COL_W + COL_GAP), top: layout.positions[layout.positions.length - 1][0].y, width: COL_W }}>
+                <div style={bk.wb}>
+                  <span style={{ fontSize: 30, lineHeight: 1, animation: "crownBounce 2s infinite" }}>👑</span>
+                  <span style={bk.wn}>{W.name}</span>
+                  {W.league && <span style={bk.wl}>{W.league}</span>}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-      <div style={bk.sh}>⤢ ziehen · Strg/Cmd + Scroll = Zoom · {Math.round(zoom * 100)}%</div>
+      <div style={bk.sh}>Wischen/Scrollen zum Navigieren — Runden horizontal, Matches vertikal</div>
     </div>
   );
 }
