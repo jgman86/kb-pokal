@@ -138,6 +138,7 @@ function Tournament({ session, onLogout }) {
   const [kbMembersErr, setKbMembersErr] = useState({}); // {leagueId: string}
   const [kbBusy, setKbBusy] = useState(false);
   const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
+  const [kbImp, setKbImp] = useState({ lid: "", busy: false, msg: "" }); // Liga-Import im Players-Tab
   const [lineupModal, setLineupModal] = useState(null); // { pairing, round, loading, p1Lineup, p2Lineup, error }
   const skip = useRef(false);
 
@@ -275,9 +276,10 @@ function Tournament({ session, onLogout }) {
       setView("round");
       // Discord + notify
       postDiscord("draw", {
-        cupName: nd.cupName, roundName: round.name,
-        pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p2: gp(m.player2Id)?.name || "?" })),
+        cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
+        pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p1Liga: gp(m.player1Id)?.league || "", p2: gp(m.player2Id)?.name || "?", p2Liga: gp(m.player2Id)?.league || "" })),
         bye: bye ? gp(bye)?.name : null,
+        remaining: act.length, totalPlayers: nd.players.length,
       });
       maybeNotifyDraw(nd, identity);
     }, (pairings.length + 1) * 500);
@@ -338,10 +340,14 @@ function Tournament({ session, onLogout }) {
     if (prs[pi].score1 != null && prs[pi].score2 != null) {
       const p1 = gp(prs[pi].player1Id), p2 = gp(prs[pi].player2Id);
       const winner = prs[pi].score1 > prs[pi].score2 ? p1 : prs[pi].score2 > prs[pi].score1 ? p2 : null;
+      const roundForDiscord = rounds[ri];
+      const doneCount = roundForDiscord.pairings.filter((x) => x.score1 != null && x.score2 != null).length;
       postDiscord("result", {
-        cupName: nd.cupName, roundName: rounds[ri].name,
-        p1: p1?.name, p2: p2?.name, s1: prs[pi].score1, s2: prs[pi].score2,
+        cupName: nd.cupName, roundName: roundForDiscord.name, matchday: roundForDiscord.matchday,
+        p1: p1?.name, p1Liga: p1?.league || "", p2: p2?.name, p2Liga: p2?.league || "",
+        s1: prs[pi].score1, s2: prs[pi].score2,
         winner: winner?.name || "offen (Gleichstand)",
+        progress: { done: doneCount, total: roundForDiscord.pairings.length },
       });
     }
   };
@@ -383,8 +389,25 @@ function Tournament({ session, onLogout }) {
     setView(fin ? "bracket" : "draw");
     setConfirm(null);
 
-    postDiscord("elimination", { cupName: nd.cupName, roundName: round.name, eliminated });
-    if (fin && rem[0]) postDiscord("winner", { cupName: nd.cupName, winner: rem[0].name, rounds: rounds.length });
+    // Für den elimination-Embed: alle Match-Ergebnisse + noch aktive Spieler + Info zur nächsten Runde
+    const matchRows = newPairings.map((mp) => {
+      const a = players.find((x) => x.id === mp.player1Id);
+      const b = players.find((x) => x.id === mp.player2Id);
+      const wn = mp.winner === mp.player1Id ? a?.name : mp.winner === mp.player2Id ? b?.name : null;
+      return { p1: a?.name || "?", p2: b?.name || "?", s1: mp.score1, s2: mp.score2, winner: wn, tiebreak: mp.tiebreakMethod };
+    });
+    const nextScheduled = !fin ? (nd.schedule || []).find((x) => x.roundNumber === round.roundNumber + 1) : null;
+    postDiscord("elimination", {
+      cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
+      eliminated, matchResults: matchRows,
+      stillIn: rem.map((p) => p.name), stillInCount: rem.length,
+      nextRoundName: nextScheduled ? getRoundName(rem.length, round.roundNumber + 1) : null,
+      nextMatchday: nextScheduled ? nextScheduled.matchday : null,
+    });
+    if (fin && rem[0]) postDiscord("winner", {
+      cupName: nd.cupName, winner: rem[0].name, winnerLiga: rem[0].league || "",
+      rounds: rounds.length, totalPlayers: nd.players.length, matchday: round.matchday,
+    });
 
     // Coin-flip visual if any pairing used coinFlip
     const cfMatch = newPairings.find((p) => p.tiebreakMethod && p.tiebreakMethod.includes("Münzwurf"));
@@ -495,6 +518,35 @@ function Tournament({ session, onLogout }) {
     lids.forEach((lid) => kbLoadMembers(lid));
     // eslint-disable-next-line
   }, [data.players.length, kbStatus.ok]);
+
+  // Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen (inkl. Mapping
+  // für den Punkte-Auto-Fetch). Bot-/Login-Account und Duplikate werden übersprungen.
+  const kbImportMembers = async () => {
+    if (!isAdmin || !kbImp.lid || kbImp.busy) return;
+    setKbImp((k) => ({ ...k, busy: true, msg: "" }));
+    const r = await kbFetch("members", { lid: kbImp.lid }, session.hash);
+    if (r.__error) { setKbImp((k) => ({ ...k, busy: false, msg: `⚠️ ${r.error || `Fehler ${r.status}`}` })); return; }
+    setKbMembers((m) => ({ ...m, [kbImp.lid]: r.members || [] }));
+    const leagueName = kbLeagues.find((l) => l.id === kbImp.lid)?.name || "";
+    const byKbId = new Set(data.players.map((p) => `${p.kickbaseLeagueId}:${p.kickbaseUserId}`));
+    const byName = new Set(data.players.map((p) => p.name.trim().toLowerCase()));
+    let skippedSelf = 0, skippedDupe = 0;
+    const ps = (r.members || []).filter((m) => {
+      if (r.selfId && m.id === r.selfId) { skippedSelf++; return false; }
+      if (byKbId.has(`${kbImp.lid}:${m.id}`) || byName.has(m.name.trim().toLowerCase())) { skippedDupe++; return false; }
+      return true;
+    }).map((m) => ({
+      id: generateId(), name: m.name, league: leagueName,
+      marketValue: 0, avatar: m.image || "", seed: 0,
+      eliminated: false, isTitleHolder: data.titleHolder === m.name,
+      kickbaseLeagueId: kbImp.lid, kickbaseUserId: m.id,
+    }));
+    if (ps.length) save({ ...data, players: [...data.players, ...ps] });
+    const parts = [`✓ ${ps.length} Teilnehmer importiert`];
+    if (skippedDupe) parts.push(`${skippedDupe} übersprungen (schon vorhanden)`);
+    if (skippedSelf) parts.push("Bot-Account ausgefiltert");
+    setKbImp((k) => ({ ...k, busy: false, msg: parts.join(" · ") }));
+  };
 
   const kbFetchPoints = async () => {
     if (!cr) return;
@@ -787,6 +839,23 @@ function Tournament({ session, onLogout }) {
             {showImp && <div style={{ marginTop: 6 }}>
               <textarea style={s.ta} rows={5} placeholder={"Name, Liga, Marktwert, Avatar, Seed\nMax, Liga A, 150000000, 🦁, 90"} value={impTxt} onChange={(e) => setImpTxt(e.target.value)} />
               <button className="btn" style={{ ...s.bS, marginTop: 6 }} onClick={importP}>Importieren</button>
+            </div>}
+            {!LOCAL_MODE && <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #1e293b" }}>
+              {!kbStatus.ok ? (
+                <button style={s.bTx} disabled={kbBusy} onClick={kbTest}>{kbBusy ? "Prüfe Verbindung..." : "⚡ Aus Kickbase-Liga importieren (Verbindung herstellen)"}</button>
+              ) : (
+                <>
+                  <p style={{ ...s.info, marginBottom: 6 }}>⚡ Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen — inkl. Verknüpfung für den Punkte-Auto-Fetch. Danach ganz normal editier- und löschbar.</p>
+                  <div style={s.ar}>
+                    <select style={{ ...s.sel, flex: 2 }} value={kbImp.lid} onChange={(e) => setKbImp({ ...kbImp, lid: e.target.value, msg: "" })}>
+                      <option value="">— Kickbase-Liga wählen —</option>
+                      {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                    <button className="btn" style={s.bA} disabled={!kbImp.lid || kbImp.busy} onClick={kbImportMembers}>{kbImp.busy ? "…" : "Importieren"}</button>
+                  </div>
+                  {kbImp.msg && <p style={{ fontSize: 12, marginTop: 6, color: kbImp.msg.startsWith("✓") ? "#4ade80" : "#ef4444" }}>{kbImp.msg}</p>}
+                </>
+              )}
             </div>}
           </div>
           {data.players.length > 0 && <div style={{ ...s.card, marginTop: 12 }} className="card">

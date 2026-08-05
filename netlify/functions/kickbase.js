@@ -25,6 +25,7 @@ const KB = "https://api.kickbase.com";
 // ── Simple in-memory token cache (Function-Cold-Start = neuer Login)
 let cachedToken = null;
 let cachedTokenExp = 0;
+let cachedSelfId = null; // User-ID des Login-Accounts (zum Ausfiltern beim Member-Import)
 
 async function kbLogin() {
   if (cachedToken && Date.now() < cachedTokenExp) return cachedToken;
@@ -75,6 +76,8 @@ async function kbLogin() {
       if (!token) { errors.push(`${tag} → 200 ohne Token: ${JSON.stringify(j).slice(0, 160)}`); continue; }
       cachedToken = token;
       cachedTokenExp = Date.now() + 45 * 60 * 1000;
+      const self = j.u || j.user || {};
+      cachedSelfId = String(self.i || self.id || "") || cachedSelfId;
       return token;
     } catch (e) {
       errors.push(`${tag} → Exception: ${e.message}`);
@@ -181,7 +184,7 @@ export default async (req) => {
         name: m.n || m.name || m.nickname || "?",
         image: m.uim || m.profileUrl || "",
       })).filter((m) => m.id);
-      return json({ members, source, count: members.length, _rawSample: members.length === 0 ? JSON.stringify(raw).slice(0, 500) : undefined });
+      return json({ members, source, count: members.length, selfId: cachedSelfId || undefined, _rawSample: members.length === 0 ? JSON.stringify(raw).slice(0, 500) : undefined });
     }
 
     if (action === "lineup") {
