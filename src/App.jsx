@@ -519,32 +519,40 @@ function Tournament({ session, onLogout }) {
     // eslint-disable-next-line
   }, [data.players.length, kbStatus.ok]);
 
-  // Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen (inkl. Mapping
-  // für den Punkte-Auto-Fetch). Bot-/Login-Account und Duplikate werden übersprungen.
+  // Mitglieder einer (oder aller) Kickbase-Ligen als Teilnehmer übernehmen, inkl.
+  // Mapping für den Punkte-Auto-Fetch. Bot-/Login-Account und Duplikate werden
+  // übersprungen — wer in mehreren Ligen spielt, landet nur einmal in der Liste.
   const kbImportMembers = async () => {
     if (!isAdmin || !kbImp.lid || kbImp.busy) return;
     setKbImp((k) => ({ ...k, busy: true, msg: "" }));
-    const r = await kbFetch("members", { lid: kbImp.lid }, session.hash);
-    if (r.__error) { setKbImp((k) => ({ ...k, busy: false, msg: `⚠️ ${r.error || `Fehler ${r.status}`}` })); return; }
-    setKbMembers((m) => ({ ...m, [kbImp.lid]: r.members || [] }));
-    const leagueName = kbLeagues.find((l) => l.id === kbImp.lid)?.name || "";
+    const targets = kbImp.lid === "__all" ? kbLeagues : kbLeagues.filter((l) => l.id === kbImp.lid);
     const byKbId = new Set(data.players.map((p) => `${p.kickbaseLeagueId}:${p.kickbaseUserId}`));
     const byName = new Set(data.players.map((p) => p.name.trim().toLowerCase()));
+    const ps = [];
     let skippedSelf = 0, skippedDupe = 0;
-    const ps = (r.members || []).filter((m) => {
-      if (r.selfId && m.id === r.selfId) { skippedSelf++; return false; }
-      if (byKbId.has(`${kbImp.lid}:${m.id}`) || byName.has(m.name.trim().toLowerCase())) { skippedDupe++; return false; }
-      return true;
-    }).map((m) => ({
-      id: generateId(), name: m.name, league: leagueName,
-      marketValue: 0, avatar: m.image || "", seed: 0,
-      eliminated: false, isTitleHolder: data.titleHolder === m.name,
-      kickbaseLeagueId: kbImp.lid, kickbaseUserId: m.id,
-    }));
+    const errs = [];
+    for (const league of targets) {
+      const r = await kbFetch("members", { lid: league.id }, session.hash);
+      if (r.__error) { errs.push(`${league.name}: ${r.error || `Fehler ${r.status}`}`); continue; }
+      setKbMembers((m) => ({ ...m, [league.id]: r.members || [] }));
+      for (const m of r.members || []) {
+        if (r.selfId && m.id === r.selfId) { skippedSelf++; continue; }
+        const nameKey = m.name.trim().toLowerCase();
+        if (byKbId.has(`${league.id}:${m.id}`) || byName.has(nameKey)) { skippedDupe++; continue; }
+        byName.add(nameKey);
+        ps.push({
+          id: generateId(), name: m.name, league: league.name,
+          marketValue: 0, avatar: m.image || "", seed: 0,
+          eliminated: false, isTitleHolder: data.titleHolder === m.name,
+          kickbaseLeagueId: league.id, kickbaseUserId: m.id,
+        });
+      }
+    }
     if (ps.length) save({ ...data, players: [...data.players, ...ps] });
-    const parts = [`✓ ${ps.length} Teilnehmer importiert`];
+    const parts = [`✓ ${ps.length} Teilnehmer importiert${targets.length > 1 ? ` (${targets.length} Ligen)` : ""}`];
     if (skippedDupe) parts.push(`${skippedDupe} übersprungen (schon vorhanden)`);
     if (skippedSelf) parts.push("Bot-Account ausgefiltert");
+    if (errs.length) parts.push(`⚠️ ${errs.join(" · ")}`);
     setKbImp((k) => ({ ...k, busy: false, msg: parts.join(" · ") }));
   };
 
@@ -847,11 +855,12 @@ function Tournament({ session, onLogout }) {
                 <>
                   <p style={{ ...s.info, marginBottom: 6 }}>⚡ Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen — inkl. Verknüpfung für den Punkte-Auto-Fetch. Danach ganz normal editier- und löschbar.</p>
                   <div style={s.ar}>
-                    <select style={{ ...s.sel, flex: 2 }} value={kbImp.lid} onChange={(e) => setKbImp({ ...kbImp, lid: e.target.value, msg: "" })}>
+                    <select style={{ ...s.sel, flex: 1 }} value={kbImp.lid} onChange={(e) => setKbImp({ ...kbImp, lid: e.target.value, msg: "" })}>
                       <option value="">— Kickbase-Liga wählen —</option>
+                      <option value="__all">🌐 Alle Ligen</option>
                       {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                     </select>
-                    <button className="btn" style={s.bA} disabled={!kbImp.lid || kbImp.busy} onClick={kbImportMembers}>{kbImp.busy ? "…" : "Importieren"}</button>
+                    <button className="btn" style={{ ...s.bS, flexShrink: 0 }} disabled={!kbImp.lid || kbImp.busy} onClick={kbImportMembers}>{kbImp.busy ? "Lade..." : "Importieren"}</button>
                   </div>
                   {kbImp.msg && <p style={{ fontSize: 12, marginTop: 6, color: kbImp.msg.startsWith("✓") ? "#4ade80" : "#ef4444" }}>{kbImp.msg}</p>}
                 </>
