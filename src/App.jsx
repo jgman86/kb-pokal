@@ -520,16 +520,18 @@ function Tournament({ session, onLogout }) {
   }, [data.players.length, kbStatus.ok]);
 
   // Mitglieder einer (oder aller) Kickbase-Ligen als Teilnehmer übernehmen, inkl.
-  // Mapping für den Punkte-Auto-Fetch. Bot-/Login-Account und Duplikate werden
-  // übersprungen — wer in mehreren Ligen spielt, landet nur einmal in der Liste.
+  // Mapping für den Punkte-Auto-Fetch. Duplikat-Erkennung läuft über die
+  // Kickbase-User-ID (eindeutig pro Account, ligaübergreifend gleich) — NICHT
+  // über den Namen, damit verschiedene Leute mit gleichem Nickname alle
+  // reinkommen. Namensgleiche Teilnehmer OHNE Verknüpfung (manuell angelegt)
+  // werden angereichert statt doppelt angelegt. Bot-Account wird gefiltert.
   const kbImportMembers = async () => {
     if (!isAdmin || !kbImp.lid || kbImp.busy) return;
     setKbImp((k) => ({ ...k, busy: true, msg: "" }));
     const targets = kbImp.lid === "__all" ? kbLeagues : kbLeagues.filter((l) => l.id === kbImp.lid);
-    const byKbId = new Set(data.players.map((p) => `${p.kickbaseLeagueId}:${p.kickbaseUserId}`));
-    const byName = new Set(data.players.map((p) => p.name.trim().toLowerCase()));
-    const ps = [];
-    let skippedSelf = 0, skippedDupe = 0;
+    const players = [...data.players];
+    const byKbId = new Set(players.map((p) => p.kickbaseUserId).filter(Boolean));
+    let added = 0, linked = 0, skippedSelf = 0, multiLeague = 0;
     const errs = [];
     for (const league of targets) {
       const r = await kbFetch("members", { lid: league.id }, session.hash);
@@ -537,20 +539,27 @@ function Tournament({ session, onLogout }) {
       setKbMembers((m) => ({ ...m, [league.id]: r.members || [] }));
       for (const m of r.members || []) {
         if (r.selfId && m.id === r.selfId) { skippedSelf++; continue; }
+        if (byKbId.has(m.id)) { multiLeague++; continue; } // gleiche Person, schon importiert (z.B. andere Liga)
         const nameKey = m.name.trim().toLowerCase();
-        if (byKbId.has(`${league.id}:${m.id}`) || byName.has(nameKey)) { skippedDupe++; continue; }
-        byName.add(nameKey);
-        ps.push({
+        const unmappedIdx = players.findIndex((p) => !p.kickbaseUserId && p.name.trim().toLowerCase() === nameKey);
+        if (unmappedIdx >= 0) {
+          players[unmappedIdx] = { ...players[unmappedIdx], kickbaseLeagueId: league.id, kickbaseUserId: m.id, avatar: players[unmappedIdx].avatar || m.image || "" };
+          byKbId.add(m.id); linked++;
+          continue;
+        }
+        players.push({
           id: generateId(), name: m.name, league: league.name,
           marketValue: 0, avatar: m.image || "", seed: 0,
           eliminated: false, isTitleHolder: data.titleHolder === m.name,
           kickbaseLeagueId: league.id, kickbaseUserId: m.id,
         });
+        byKbId.add(m.id); added++;
       }
     }
-    if (ps.length) save({ ...data, players: [...data.players, ...ps] });
-    const parts = [`✓ ${ps.length} Teilnehmer importiert${targets.length > 1 ? ` (${targets.length} Ligen)` : ""}`];
-    if (skippedDupe) parts.push(`${skippedDupe} übersprungen (schon vorhanden)`);
+    if (added || linked) save({ ...data, players });
+    const parts = [`✓ ${added} Teilnehmer importiert${targets.length > 1 ? ` (${targets.length} Ligen)` : ""}`];
+    if (linked) parts.push(`${linked} bestehende verknüpft`);
+    if (multiLeague) parts.push(`${multiLeague} Mehrfach-Liga-Spieler nur 1× angelegt`);
     if (skippedSelf) parts.push("Bot-Account ausgefiltert");
     if (errs.length) parts.push(`⚠️ ${errs.join(" · ")}`);
     setKbImp((k) => ({ ...k, busy: false, msg: parts.join(" · ") }));
