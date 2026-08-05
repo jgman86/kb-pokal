@@ -9,6 +9,8 @@ const KB = "https://api.kickbase.com";
 
 let cachedToken = null;
 let cachedTokenExp = 0;
+let selfId = null; // User-ID des Bot-Accounts (aus der Login-Response)
+export const getSelfId = () => selfId;
 
 const browserHeaders = () => ({
   "content-type": "application/json",
@@ -35,6 +37,8 @@ export async function login(force = false) {
   const j = JSON.parse(txt);
   const token = j.tkn || j.token || j.access_token;
   if (!token) throw new Error("Kein Token in Login-Antwort: " + txt.slice(0, 200));
+  const self = j.u || j.user || {};
+  selfId = String(self.i || self.id || "") || selfId;
   cachedToken = token;
   cachedTokenExp = Date.now() + 45 * 60 * 1000;
   return token;

@@ -6,7 +6,7 @@
 
 import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
 import * as kb from "./kickbase.js";
-import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, statsEmbed, leagueStatsEmbed, errorEmbed, helpEmbed } from "./format.js";
+import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, statsEmbed, leagueStatsEmbed, legendsEmbed, shortLiga, errorEmbed, helpEmbed } from "./format.js";
 import { runJob } from "./scheduler.js";
 
 // Memo: Member-Listen pro Liga (für Autocomplete)
@@ -77,6 +77,10 @@ export function buildCommands(config) {
       .addStringOption((o) => o.setName("user").setDescription("Manager (optional, sonst Liga-Übersicht)").setAutocomplete(true))
       .addIntegerOption((o) => o.setName("last").setDescription("Letzte N Spieltage (Default: alle)").setMinValue(1).setMaxValue(34)),
     new SlashCommandBuilder()
+      .setName("legends")
+      .setDescription("🌟 Ligaübergreifende Spieltags-Rangliste — alle Ligen, ein Ranking")
+      .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
+    new SlashCommandBuilder()
       .setName("run-schedule")
       .setDescription("Einen geplanten Job sofort ausführen (Admin)")
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -129,6 +133,31 @@ export async function handleCommand(interaction, config) {
   }
 
   await interaction.deferReply();
+
+  if (commandName === "legends") {
+    try {
+      let day = interaction.options.getInteger("day");
+      if (day == null) day = (await kb.getCurrentMatchday()) ?? 1;
+      const selfId = kb.getSelfId();
+      const results = await Promise.all(config.leagues.map(async (lg) => {
+        try { return { lg, rows: await kb.getMatchdayPoints(lg.id, day) }; }
+        catch (e) { return { lg, error: e.message }; }
+      }));
+      const merged = [];
+      const failed = [];
+      for (const r of results) {
+        if (r.error || !r.rows) { failed.push(r.lg.name); continue; }
+        for (const row of r.rows) {
+          if (selfId && row.id === selfId) continue; // Bot-Account rausfiltern
+          merged.push({ ...row, liga: shortLiga(r.lg.name) });
+        }
+      }
+      merged.sort((a, b) => (b.points - a.points) || a.name.localeCompare(b.name));
+      return interaction.editReply({ embeds: [legendsEmbed(day, merged, { failed })] });
+    } catch (e) {
+      return interaction.editReply({ embeds: [errorEmbed(e.message)] });
+    }
+  }
 
   try {
     const leagueOpt = interaction.options.getString?.("league");
