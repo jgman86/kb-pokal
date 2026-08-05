@@ -138,6 +138,7 @@ function Tournament({ session, onLogout }) {
   const [kbMembersErr, setKbMembersErr] = useState({}); // {leagueId: string}
   const [kbBusy, setKbBusy] = useState(false);
   const [kbFetchModal, setKbFetchModal] = useState(null); // { results: [{pairingId, p1,p2, s1,s2, missing:[names]}], md }
+  const [kbImp, setKbImp] = useState({ lid: "", busy: false, msg: "" }); // Liga-Import im Players-Tab
   const [lineupModal, setLineupModal] = useState(null); // { pairing, round, loading, p1Lineup, p2Lineup, error }
   const skip = useRef(false);
 
@@ -518,6 +519,35 @@ function Tournament({ session, onLogout }) {
     // eslint-disable-next-line
   }, [data.players.length, kbStatus.ok]);
 
+  // Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen (inkl. Mapping
+  // für den Punkte-Auto-Fetch). Bot-/Login-Account und Duplikate werden übersprungen.
+  const kbImportMembers = async () => {
+    if (!isAdmin || !kbImp.lid || kbImp.busy) return;
+    setKbImp((k) => ({ ...k, busy: true, msg: "" }));
+    const r = await kbFetch("members", { lid: kbImp.lid }, session.hash);
+    if (r.__error) { setKbImp((k) => ({ ...k, busy: false, msg: `⚠️ ${r.error || `Fehler ${r.status}`}` })); return; }
+    setKbMembers((m) => ({ ...m, [kbImp.lid]: r.members || [] }));
+    const leagueName = kbLeagues.find((l) => l.id === kbImp.lid)?.name || "";
+    const byKbId = new Set(data.players.map((p) => `${p.kickbaseLeagueId}:${p.kickbaseUserId}`));
+    const byName = new Set(data.players.map((p) => p.name.trim().toLowerCase()));
+    let skippedSelf = 0, skippedDupe = 0;
+    const ps = (r.members || []).filter((m) => {
+      if (r.selfId && m.id === r.selfId) { skippedSelf++; return false; }
+      if (byKbId.has(`${kbImp.lid}:${m.id}`) || byName.has(m.name.trim().toLowerCase())) { skippedDupe++; return false; }
+      return true;
+    }).map((m) => ({
+      id: generateId(), name: m.name, league: leagueName,
+      marketValue: 0, avatar: m.image || "", seed: 0,
+      eliminated: false, isTitleHolder: data.titleHolder === m.name,
+      kickbaseLeagueId: kbImp.lid, kickbaseUserId: m.id,
+    }));
+    if (ps.length) save({ ...data, players: [...data.players, ...ps] });
+    const parts = [`✓ ${ps.length} Teilnehmer importiert`];
+    if (skippedDupe) parts.push(`${skippedDupe} übersprungen (schon vorhanden)`);
+    if (skippedSelf) parts.push("Bot-Account ausgefiltert");
+    setKbImp((k) => ({ ...k, busy: false, msg: parts.join(" · ") }));
+  };
+
   const kbFetchPoints = async () => {
     if (!cr) return;
     const md = cr.matchday && cr.matchday.match(/\d+/)?.[0];
@@ -809,6 +839,23 @@ function Tournament({ session, onLogout }) {
             {showImp && <div style={{ marginTop: 6 }}>
               <textarea style={s.ta} rows={5} placeholder={"Name, Liga, Marktwert, Avatar, Seed\nMax, Liga A, 150000000, 🦁, 90"} value={impTxt} onChange={(e) => setImpTxt(e.target.value)} />
               <button className="btn" style={{ ...s.bS, marginTop: 6 }} onClick={importP}>Importieren</button>
+            </div>}
+            {!LOCAL_MODE && <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #1e293b" }}>
+              {!kbStatus.ok ? (
+                <button style={s.bTx} disabled={kbBusy} onClick={kbTest}>{kbBusy ? "Prüfe Verbindung..." : "⚡ Aus Kickbase-Liga importieren (Verbindung herstellen)"}</button>
+              ) : (
+                <>
+                  <p style={{ ...s.info, marginBottom: 6 }}>⚡ Alle Mitglieder einer Kickbase-Liga als Teilnehmer übernehmen — inkl. Verknüpfung für den Punkte-Auto-Fetch. Danach ganz normal editier- und löschbar.</p>
+                  <div style={s.ar}>
+                    <select style={{ ...s.sel, flex: 2 }} value={kbImp.lid} onChange={(e) => setKbImp({ ...kbImp, lid: e.target.value, msg: "" })}>
+                      <option value="">— Kickbase-Liga wählen —</option>
+                      {kbLeagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                    <button className="btn" style={s.bA} disabled={!kbImp.lid || kbImp.busy} onClick={kbImportMembers}>{kbImp.busy ? "…" : "Importieren"}</button>
+                  </div>
+                  {kbImp.msg && <p style={{ fontSize: 12, marginTop: 6, color: kbImp.msg.startsWith("✓") ? "#4ade80" : "#ef4444" }}>{kbImp.msg}</p>}
+                </>
+              )}
             </div>}
           </div>
           {data.players.length > 0 && <div style={{ ...s.card, marginTop: 12 }} className="card">
