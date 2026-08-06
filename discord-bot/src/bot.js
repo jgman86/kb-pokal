@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleCommand, handleAutocomplete } from "./commands.js";
-import { handleTippButton } from "./tippspiel.js";
+import { handleTippButton, startTippWatcher } from "./tippspiel.js";
 import { startSchedules } from "./scheduler.js";
 import * as kb from "./kickbase.js";
 
@@ -54,6 +54,7 @@ async function main() {
   client.once(Events.ClientReady, (c) => {
     console.log(`[Bot] ✓ Eingeloggt als ${c.user.tag}`);
     startSchedules(client, config);
+    startTippWatcher(client, config);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
