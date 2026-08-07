@@ -35,8 +35,13 @@
     }
   ],
 
+  "tippspiel": {
+    "channelId": "444444444444444444"
+  },
+
   "_doc": {
     "leagues": "id = Kickbase-League-ID (steht in der URL der League-Seite). channelId = Discord-Channel-ID (Rechtsklick auf Channel → Channel-ID kopieren, Developer-Mode nötig).",
+    "tippspiel": "channelId = Channel für das automatische Tippspiel: neue Auslosungen werden dort gepostet, zum Spieltagsstart gesperrt und nach der Wertung aufgelöst (+Tabelle). Ohne diesen Block läuft das Tippspiel nur manuell über /tipp start. Braucht SUPABASE_URL/SUPABASE_ANON_KEY in der .env.",
     "cron_format": "Minute Stunde Tag-im-Monat Monat Wochentag — siehe https://crontab.guru. Beispiele: '0 21 * * 1' = Mo 21:00, '0 9 * * *' = jeden Tag 9:00, '*/30 * * * *' = alle 30 Min.",
     "tasks": {
       "standings": "Saison-Tabelle (Punkte gesamt) der Liga",

@@ -377,6 +377,31 @@ export async function getLineup(leagueId, userId, dayNumber) {
   return { lineup, totalPoints };
 }
 
+// Frühester Anstoß eines Bundesliga-Spieltags (Competition 1) — fürs
+// Auto-Locken der Tipps. Defensive Feldnamen-Suche, da die v4-API
+// inoffiziell ist; bei Fehlschlag null (Aufrufer nutzt Fallback-Regel).
+const kickoffCache = new Map();
+const KICKOFF_TTL = 6 * 60 * 60 * 1000; // 6h
+export async function getMatchdayKickoff(day) {
+  const cached = kickoffCache.get(day);
+  if (cached && Date.now() - cached.ts < KICKOFF_TTL) return cached.date;
+  let date = null;
+  try {
+    const r = await get(`/v4/competitions/1/matchdays`);
+    const days = r.it || r.md || r.days || [];
+    const entry = days.find((x) => Number(x.day ?? x.d ?? x.i) === Number(day));
+    const matches = entry?.it || entry?.ms || entry?.m || entry?.matches || [];
+    const times = matches
+      .map((m) => new Date(m.dt || m.d || m.kickoff || m.ko || 0).getTime())
+      .filter((t) => t > 946684800000); // > Jahr 2000 = plausibel
+    if (times.length) date = new Date(Math.min(...times));
+  } catch (e) {
+    console.warn(`[KB] /competitions/1/matchdays failed: ${e.message}`);
+  }
+  kickoffCache.set(day, { ts: Date.now(), date });
+  return date;
+}
+
 export async function getCurrentMatchday() {
   try {
     const leagues = await listLeagues();

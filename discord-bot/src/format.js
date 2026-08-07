@@ -440,6 +440,7 @@ export function helpEmbed() {
         "**/lineup** `<league> <user> [day]` — 11er-Aufstellung mit Einzelpunkten",
         "**/stats** `<league> [user] [last]` — Stats über Zeitraum mit Linechart (ohne user → Liga-Übersicht)",
         "**/legends** `[day]` — 🌟 Ligaübergreifende Spieltags-Rangliste über alle Ligen",
+        "**/tipp** `start|lock|resolve|tabelle` — 🎯 Community-Tippspiel auf die Pokal-Duelle (Live-Voting mit Community-Quote)",
         "**/run-schedule** `<job>` — _(Admin)_ Geplanten Job sofort ausführen",
         "**/help** — Diese Übersicht",
         "",

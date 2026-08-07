@@ -12,6 +12,8 @@ Standalone Discord-Bot, der Kickbase-Daten on-demand und nach Zeitplan in deine 
 | `/matchday [day] [league]` | Punkte eines Spieltags (Default: aktueller Spieltag) |
 | `/points <user> [league]` | Saison- und aktuelle Spieltagspunkte eines Managers |
 | `/lineup <user> [day] [league]` | Aufstellung mit Einzelpunkten |
+| `/legends [day]` | 🌟 Ligaübergreifende Spieltags-Rangliste über alle Ligen |
+| `/tipp start\|lock\|resolve\|tabelle` | 🎯 Community-Tippspiel auf die Pokal-Duelle — Live-Voting per Button, Community-Quote (Gesamt÷Stimmen), Punkte = Quote des richtigen Tipps. Braucht `SUPABASE_URL`/`SUPABASE_ANON_KEY` in der `.env` (liest die Paarungen aus der Pokal-App) |
 | `/help` | Befehlsübersicht |
 
 `<user>` hat Autocomplete — sobald du tippst, werden Liga-Mitglieder gefiltert.

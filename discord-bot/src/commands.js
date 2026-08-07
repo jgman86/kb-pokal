@@ -8,6 +8,7 @@ import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
 import * as kb from "./kickbase.js";
 import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, statsEmbed, leagueStatsEmbed, legendsEmbed, shortLiga, errorEmbed, helpEmbed } from "./format.js";
 import { runJob } from "./scheduler.js";
+import { handleTippCommand } from "./tippspiel.js";
 
 // Memo: Member-Listen pro Liga (für Autocomplete)
 const memberCache = new Map(); // leagueId → { ts, members }
@@ -77,6 +78,13 @@ export function buildCommands(config) {
       .addStringOption((o) => o.setName("user").setDescription("Manager (optional, sonst Liga-Übersicht)").setAutocomplete(true))
       .addIntegerOption((o) => o.setName("last").setDescription("Letzte N Spieltage (Default: alle)").setMinValue(1).setMaxValue(34)),
     new SlashCommandBuilder()
+      .setName("tipp")
+      .setDescription("🎯 Community-Tippspiel auf die Pokal-Duelle")
+      .addSubcommand((sc) => sc.setName("start").setDescription("Tipp-Voting für die aktuelle Pokalrunde in diesem Channel posten (Admin)"))
+      .addSubcommand((sc) => sc.setName("lock").setDescription("Alle offenen Tipps sperren (Admin)"))
+      .addSubcommand((sc) => sc.setName("resolve").setDescription("Beendete Duelle auflösen und Punkte vergeben (Admin)"))
+      .addSubcommand((sc) => sc.setName("tabelle").setDescription("Tippspiel-Rangliste anzeigen")),
+    new SlashCommandBuilder()
       .setName("legends")
       .setDescription("🌟 Ligaübergreifende Spieltags-Rangliste — alle Ligen, ein Ranking")
       .addIntegerOption((o) => o.setName("day").setDescription("Spieltag (Default: aktueller)").setMinValue(1).setMaxValue(34)),
@@ -96,6 +104,10 @@ export async function handleCommand(interaction, config) {
 
   if (commandName === "help") {
     return interaction.reply({ embeds: [helpEmbed()], ephemeral: true });
+  }
+
+  if (commandName === "tipp") {
+    return handleTippCommand(interaction);
   }
 
   if (commandName === "run-schedule") {
