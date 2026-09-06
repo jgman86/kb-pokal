@@ -209,18 +209,36 @@ export default async (req) => {
     }
 
     if (action === "points") {
-      // Dokumentiert: GET /v4/leagues/{lid}/ranking?dayNumber=X
+      // GET /v4/leagues/{lid}/ranking?dayNumber=X → us[].mdp = Punkte GENAU
+      // dieses Spieltags (verifiziert Saison 26/27). us[].sp wären die
+      // kumulierten Saisonpunkte — die dürfen hier NIE genommen werden
+      // (Bug: Pokal-Runden bekamen Gesamtpunkte statt Spieltagspunkte).
       if (!lid) return json({ error: "lid fehlt" }, 400);
       if (!md) return json({ error: "md fehlt" }, 400);
       const data = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/ranking?dayNumber=${encodeURIComponent(md)}`, token);
-      // Response-Shape dokumentationstechnisch nicht fixiert — mehrere Wrapper probieren
-      const arr = data.users || data.us || data.ranking || data.rk || data.it || (Array.isArray(data) ? data : []);
-      const points = arr.map((m) => ({
-        id: String(m.i || m.id || m.userId || ""),
-        name: m.n || m.name || m.nickname || "?",
-        points: Number(m.sp ?? m.mdp ?? m.p ?? m.points ?? m.seasonPoints ?? m.matchdayPoints ?? 0),
+      const arr = data.us || data.users || (Array.isArray(data) ? data : []);
+      let points = arr.map((m) => ({
+        id: String(m.i || m.id || ""),
+        name: m.n || m.name || "?",
+        points: Number(m.mdp ?? m.matchdayPoints ?? 0),
       })).filter((x) => x.id);
-      return json({ matchday: Number(md), points, _rawSample: points.length === 0 ? JSON.stringify(data).slice(0, 500) : undefined });
+      let source = "ranking-day";
+      // Fallback: falls ranking?dayNumber nur Nullen liefert (kam in der
+      // Saison 25/26 vor), teamcenter mit beliebiger Member-ID probieren.
+      if (points.length > 0 && !points.some((p) => p.points > 0)) {
+        try {
+          const uid = points[0].id;
+          const tc = await kbGet(`/v4/leagues/${encodeURIComponent(lid)}/users/${encodeURIComponent(uid)}/teamcenter?dayNumber=${encodeURIComponent(md)}`, token);
+          const tus = tc.us || [];
+          if (tus.some((u) => Number(u.mdp || 0) > 0)) {
+            const byId = new Map(tus.map((u) => [String(u.i || ""), Number(u.mdp || 0)]));
+            points = points.map((p) => ({ ...p, points: byId.get(p.id) ?? 0 }));
+            source = "teamcenter";
+          }
+        } catch { /* Fallback optional — ranking-Nullen bleiben dann stehen */ }
+      }
+      const allZero = points.length > 0 && !points.some((p) => p.points > 0);
+      return json({ matchday: Number(md), points, source, warning: allZero ? `Alle Punkte 0 — Spieltag ${md} evtl. noch nicht gespielt` : undefined, _rawSample: points.length === 0 ? JSON.stringify(data).slice(0, 500) : undefined });
     }
 
     return json({ error: `Unbekannte Action: ${action}` }, 400);

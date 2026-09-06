@@ -45,7 +45,17 @@ export async function runJob(client, sched, league) {
         day = (cur ?? 1) + (sched.matchdayOffset || 0);
         if (day < 1) day = 1;
       }
-      const rows = await kb.getMatchdayPoints(league.id, day);
+      let rows = await kb.getMatchdayPoints(league.id, day);
+      // Kickbase schaltet den "aktuellen" Spieltag direkt nach Abschluss weiter —
+      // ein Recap kann dadurch auf dem noch ungespielten Tag landen (alles 0).
+      // Dann automatisch den zuletzt gespielten Spieltag nehmen.
+      if (sched.matchday == null && day > 1 && (rows._meta?.nonZero ?? 0) === 0) {
+        const prev = await kb.getMatchdayPoints(league.id, day - 1);
+        if ((prev._meta?.nonZero ?? 0) > 0) {
+          console.log(`[Scheduler] ${sched.name}: Spieltag ${day} noch ohne Punkte → zeige Spieltag ${day - 1}.`);
+          day -= 1; rows = prev;
+        }
+      }
       await channel.send({ embeds: [matchdayEmbed(league.name, day, rows, opts)] });
       return;
     }
