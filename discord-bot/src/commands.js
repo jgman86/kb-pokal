@@ -184,8 +184,15 @@ export async function handleCommand(interaction, config) {
 
     if (commandName === "matchday") {
       let day = interaction.options.getInteger("day");
+      const dayWasGiven = day != null;
       if (day == null) day = (await kb.getCurrentMatchday()) ?? 1;
-      const rows = await kb.getMatchdayPoints(league.id, day);
+      let rows = await kb.getMatchdayPoints(league.id, day);
+      // Ohne explizites day: wenn der aktuelle Spieltag noch ungespielt ist
+      // (Kickbase hat schon weitergeschaltet), den letzten gespielten zeigen.
+      if (!dayWasGiven && day > 1 && (rows._meta?.nonZero ?? 0) === 0) {
+        const prev = await kb.getMatchdayPoints(league.id, day - 1);
+        if ((prev._meta?.nonZero ?? 0) > 0) { day -= 1; rows = prev; }
+      }
       return interaction.editReply({ embeds: [matchdayEmbed(league.name, day, rows, tableOpts)] });
     }
 

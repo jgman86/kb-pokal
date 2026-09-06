@@ -114,17 +114,20 @@ export async function getStandings(leagueId) {
   return rankByPoints(rows);
 }
 
-// Spieltag-Punkte über zwei verschiedene Endpoints versucht — der erste der
-// nicht-leere Daten liefert wird genommen. Hintergrund: /ranking?dayNumber=X
-// liefert für vergangene Spieltage konsistent mdp=0, /performance kann je
-// nach Permissions auch leer kommen.
+// Spieltag-Punkte über drei Strategien — die erste mit echten Daten gewinnt.
+// Seit Saison 26/27 liefert /ranking?dayNumber=X wieder korrekte mdp (in 25/26
+// kamen dort nur Nullen), daher ist das jetzt Strategie 0.
+// WICHTIG: Kein Hard-Abort mehr über leagueStartMatchday (mppu) — der Wert
+// stammt aus der GRÜNDUNGS-Saison der Liga (z.B. CL: ST17 in 25/26) und würde
+// in Folge-Saisons jede Abfrage früher Spieltage fälschlich blockieren.
 export async function getMatchdayPoints(leagueId, dayNumber) {
   const day = Number(dayNumber);
 
-  // 1. Liga-Info + Manager-Liste parallel
-  const [leagueInfo, ranking] = await Promise.all([
+  // Liga-Info + Manager-Liste + Tages-Ranking parallel
+  const [leagueInfo, ranking, dayRanking] = await Promise.all([
     getLeagueInfo(leagueId),
     get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`).catch(() => null),
+    get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking?dayNumber=${day}`).catch(() => null),
   ]);
   const managers = ((ranking && ranking.us) || []).map((m) => ({
     id: String(m.i || ""),
@@ -132,13 +135,19 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
     image: m.uim || "",
   })).filter((m) => m.id);
 
-  // Sofort-Abbruch wenn Tag vor Liga-Erstellung
-  if (leagueInfo.startMatchday && day < leagueInfo.startMatchday) {
-    return Object.assign([], { _meta: { source: "before-league-creation", requestedDay: day, total: 0, nonZero: 0, leagueStartMatchday: leagueInfo.startMatchday } });
-  }
-
   if (managers.length === 0) {
     return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0, leagueStartMatchday: leagueInfo.startMatchday } });
+  }
+
+  // ─── Strategie 0: /ranking?dayNumber=X → us[].mdp
+  if (dayRanking && Array.isArray(dayRanking.us)) {
+    const byId = new Map(dayRanking.us.map((u) => [String(u.i || ""), Number(u.mdp || 0)]));
+    const rows = managers.map((m) => ({ ...m, points: byId.get(m.id) ?? 0 }));
+    const nonZero = rows.filter((r) => r.points > 0).length;
+    if (nonZero > 0) {
+      return Object.assign(rankByPoints(rows), { _meta: { source: "ranking-day", requestedDay: day, total: rows.length, nonZero, leagueStartMatchday: leagueInfo.startMatchday } });
+    }
+    console.warn(`[KB] ranking?dayNumber=${day}: alle 0, probiere /teamcenter...`);
   }
 
   // ─── Strategie A: /teamcenter?dayNumber=X

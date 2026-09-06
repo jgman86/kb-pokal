@@ -92,17 +92,16 @@ export function matchdayEmbed(leagueName, day, rows, opts = {}) {
   const tableOpts = { topN: promotionCount, botN: relegationCount, titleHolder };
   const meta = rows._meta || {};
 
-  // Tag liegt vor Liga-Erstellung — die Liga existierte da noch nicht
+  // Warn-Embed NUR wenn wirklich keine Punkte gefunden wurden. Der Liga-
+  // Erstellungs-Spieltag (mppu) stammt aus der Gründungs-Saison und ist in
+  // Folge-Saisons nur noch ein Hinweis, kein Ausschlusskriterium.
   const startMd = meta.leagueStartMatchday || meta.earliestAccessibleDay;
-  if (startMd && day < startMd) {
-    const reason = meta.leagueStartMatchday
-      ? `Diese Liga wurde an **Spieltag ${meta.leagueStartMatchday}** erstellt — frühere Spieltage existieren in dieser Liga nicht.`
-      : `Frühester verfügbarer Spieltag in dieser Liga: **${meta.earliestAccessibleDay}**.`;
+  if ((meta.nonZero ?? 0) === 0 && meta.total === 0 && startMd && day < startMd) {
     return new EmbedBuilder()
       .setTitle(`📅 Spieltag ${day} — ${leagueName}`)
       .setDescription(
-        `⚠️ **Keine Daten für Spieltag ${day}**\n\n${reason}\n\n` +
-        `_Verfügbarer Bereich: Spieltag ${startMd} bis aktuell._`
+        `⚠️ **Keine Daten für Spieltag ${day}**\n\n` +
+        `Möglicher Grund: Die Liga wurde (in ihrer ersten Saison) erst an **Spieltag ${startMd}** erstellt.`
       )
       .setColor(0xff9100)
       .setTimestamp(new Date())
