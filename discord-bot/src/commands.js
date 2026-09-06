@@ -121,7 +121,7 @@ export async function handleCommand(interaction, config) {
       for (const league of config.leagues) {
         const virtualSched = task === "standings"
           ? { name: `${league.name} — Saison-Tabelle (manuell)`, leagueId: league.id, task: "standings" }
-          : { name: `${league.name} — Spieltag-Recap (manuell)`, leagueId: league.id, task: "matchday", matchdayOffset: -1 };
+          : { name: `${league.name} — Spieltag-Recap (manuell)`, leagueId: league.id, task: "matchday", matchdayOffset: 0 };
         try {
           await runJob(interaction.client, virtualSched, league);
           results.push(`✓ ${league.name} → <#${league.channelId}>`);
