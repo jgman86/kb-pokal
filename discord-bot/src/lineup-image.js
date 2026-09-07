@@ -27,30 +27,12 @@ async function fetchDataUri(path) {
   } catch { return null; }
 }
 
-// Echtes Spielerfoto (pool/playersbig/{id}.png) auf den KOPF zugeschnitten:
-// Die Fotos sind nach Transfers oft veraltet (falsches Trikot) — aber es
-// sind standardisierte Studio-Aufnahmen (1100x800, Kopf immer gleich
-// positioniert). Der enge Kopf-Zuschnitt zeigt das echte Gesicht und
-// lässt das (womöglich falsche) Trikot komplett aus dem Bild.
-async function fetchHeadshot(id) {
-  if (!id) return null;
-  try {
-    const r = await fetch(`${CDN}pool/playersbig/${id}.png`, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return null;
-    const buf = Buffer.from(await r.arrayBuffer());
-    const m = await sharp(buf).metadata();
-    const cw = Math.round(m.width * 0.35);
-    const png = await sharp(buf)
-      .extract({ left: Math.round((m.width - cw) / 2), top: Math.round(m.height * 0.04), width: cw, height: Math.min(cw, m.height - Math.round(m.height * 0.04)) })
-      .resize(240, 240, { fit: "cover" }).png().toBuffer();
-    return `data:image/png;base64,${png.toString("base64")}`;
-  } catch { return null; }
-}
-
-// Porträt-Quelle: echtes Gesicht (Kopf-Zuschnitt) → Trikot-Grafik aus der
-// API (pim, aktuelles Kit, aber Faksimile) → Initialen-Kreis.
+// Porträt-Quelle: das originale Kickbase-Spielerfoto (pool/playersbig/
+// {id}.png, Kopf + Oberkörper, unbeschnitten — Premium-App-Optik) →
+// Trikot-Grafik aus der API (pim) → Initialen-Kreis. Kein eigener
+// Zuschnitt: die Bilder kommen 1:1 von Kickbase (nur Kreis-Maskierung).
 async function fetchPortrait(p) {
-  return (await fetchHeadshot(p.id)) || (p.image && await fetchDataUri(p.image)) || null;
+  return (p.id && await fetchDataUri(`pool/playersbig/${p.id}.png`)) || (p.image && await fetchDataUri(p.image)) || null;
 }
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
