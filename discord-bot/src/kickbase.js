@@ -384,6 +384,7 @@ export async function getLineup(leagueId, userId, dayNumber) {
       position: sq.pos ?? null,
       points: pointsForDay(perfs[i]),
       status: sq.st ?? null,
+      image: sq.pim || null, // CDN-Pfad des Spielerporträts (kickbase.b-cdn.net)
     };
   });
 
