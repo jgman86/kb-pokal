@@ -361,6 +361,18 @@ export async function getLineup(leagueId, userId, dayNumber) {
   const [squad, ...perfs] = await Promise.all([squadPromise, ...perfPromises]);
   const squadById = Object.fromEntries(((squad && squad.it) || []).map((p) => [String(p.pi), p]));
 
+  // Spieler, die seit dem Spieltag verkauft wurden, fehlen im aktuellen Kader —
+  // Name/Position über den Spieler-Detail-Endpoint nachladen (best effort).
+  const missingIds = playerIds.filter((pid) => !squadById[pid]);
+  if (missingIds.length) {
+    const details = await Promise.all(missingIds.map((pid) =>
+      get(`/v4/leagues/${encodeURIComponent(leagueId)}/players/${encodeURIComponent(pid)}`).catch(() => null)));
+    missingIds.forEach((pid, i) => {
+      const d = details[i];
+      if (d) squadById[pid] = { pn: d.ln || d.n || d.pn || "?", pos: d.pos ?? null, pim: d.pim || null, st: d.st ?? null };
+    });
+  }
+
   function pointsForDay(perf) {
     if (!perf || !Array.isArray(perf.it)) return 0;
     let bestDate = "", bestPoints = 0;

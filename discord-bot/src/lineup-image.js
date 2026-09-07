@@ -12,6 +12,8 @@ const CDN = "https://kickbase.b-cdn.net/";
 const W = 900, H = 1150;
 const AV_R = 52; // Radius Spielerporträt
 
+// Bild laden und via sharp nach PNG re-kodieren + quadratisch zuschneiden —
+// macht auch WebP/JPEG/Transparenz librsvg-sicher (sonst leere Kreise).
 async function fetchDataUri(path) {
   if (!path) return null;
   const url = /^https?:\/\//.test(path) ? path : CDN + path.replace(/^\//, "");
@@ -19,10 +21,16 @@ async function fetchDataUri(path) {
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > 3_000_000) return null; // Ausreißer meiden
-    const mime = r.headers.get("content-type") || "image/png";
-    return `data:${mime};base64,${buf.toString("base64")}`;
+    if (buf.length > 5_000_000) return null; // Ausreißer meiden
+    const png = await sharp(buf).resize(240, 240, { fit: "cover" }).png().toBuffer();
+    return `data:image/png;base64,${png.toString("base64")}`;
   } catch { return null; }
+}
+
+// Porträt-Quelle: echtes Spielerfoto (pool/playersbig/{id}.png), sonst
+// Trikot-Grafik aus der API (pim), sonst null → Initialen-Kreis.
+async function fetchPortrait(p) {
+  return (p.id && await fetchDataUri(`pool/playersbig/${p.id}.png`)) || (p.image && await fetchDataUri(p.image)) || null;
 }
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -58,7 +66,7 @@ export async function renderLineupImage({ managerName, managerImage, leagueName,
   const rowY = usedRows.map((_, i) => usedRows.length === 1 ? (top + bottom) / 2 : top + 80 + (i * (bottom - top - 160)) / (usedRows.length - 1));
 
   // Alle Bilder parallel laden (11 Porträts + Manager-Avatar)
-  const imgs = await Promise.all(lineup.map((p) => fetchDataUri(p.image)));
+  const imgs = await Promise.all(lineup.map((p) => fetchPortrait(p)));
   const mgrImg = await fetchDataUri(managerImage);
 
   let nodes = "", idx = 0;
