@@ -86,9 +86,13 @@ export async function listMembers(leagueId) {
       id: String(m.i || ""),
       name: m.n || "?",
       image: m.uim || "",
-    })).filter((m) => m.id),
+    })).filter((m) => m.id).filter(notSelf),
   };
 }
+
+// Der Bot-Account selbst ("Admin und Pokal") ist in jeder Liga Mitglied,
+// spielt aber nicht mit (immer 0 Punkte) — aus allen Listen rausfiltern.
+const notSelf = (m) => !selfId || m.id !== selfId;
 
 function rankByPoints(rows) {
   rows.sort((a, b) => (b.points - a.points) || a.name.localeCompare(b.name));
@@ -110,7 +114,7 @@ export async function getStandings(leagueId) {
     name: m.n || "?",
     points: Number(m.sp || 0),
     image: m.uim || "",
-  })).filter((m) => m.id);
+  })).filter((m) => m.id).filter(notSelf);
   return rankByPoints(rows);
 }
 
@@ -133,7 +137,7 @@ export async function getMatchdayPoints(leagueId, dayNumber) {
     id: String(m.i || ""),
     name: m.n || "?",
     image: m.uim || "",
-  })).filter((m) => m.id);
+  })).filter((m) => m.id).filter(notSelf);
 
   if (managers.length === 0) {
     return Object.assign([], { _meta: { source: "ranking-empty", requestedDay: day, total: 0, nonZero: 0, leagueStartMatchday: leagueInfo.startMatchday } });
@@ -311,7 +315,7 @@ export async function getTeamMarketValueHistory(leagueId, playerIds, lastDays = 
 
 export async function getLeagueStats(leagueId, lastN = null) {
   const ranking = await get(`/v4/leagues/${encodeURIComponent(leagueId)}/ranking`);
-  const managers = ((ranking && ranking.us) || []).map((m) => ({ id: String(m.i || ""), name: m.n || "?" })).filter((m) => m.id);
+  const managers = ((ranking && ranking.us) || []).map((m) => ({ id: String(m.i || ""), name: m.n || "?" })).filter((m) => m.id).filter(notSelf);
 
   const stats = await Promise.all(managers.map((m) => getManagerStats(leagueId, m.id, lastN).catch(() => null)));
   const valid = stats.filter((s) => s && s.n > 0);
