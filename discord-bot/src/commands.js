@@ -4,11 +4,12 @@
 //   - autocomplete (optional): Reagiert auf Tipp-Vorschläge
 //   - execute: Reagiert auf Command-Ausführung
 
-import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, AttachmentBuilder, EmbedBuilder } from "discord.js";
 import * as kb from "./kickbase.js";
 import { standingsEmbed, matchdayEmbed, pointsEmbed, lineupEmbed, statsEmbed, leagueStatsEmbed, legendsEmbed, shortLiga, errorEmbed, helpEmbed } from "./format.js";
 import { runJob } from "./scheduler.js";
 import { handleTippCommand } from "./tippspiel.js";
+import { renderLineupImage } from "./lineup-image.js";
 
 // Memo: Member-Listen pro Liga (für Autocomplete)
 const memberCache = new Map(); // leagueId → { ts, members }
@@ -242,6 +243,25 @@ export async function handleCommand(interaction, config) {
       const user = members.find((m) => m.id === userIdOrName) || members.find((m) => m.name.toLowerCase() === userIdOrName.toLowerCase());
       if (!user) return interaction.editReply({ embeds: [errorEmbed(`Manager "${userIdOrName}" in ${league.name} nicht gefunden`)] });
       const { lineup, totalPoints, _rawSample } = await kb.getLineup(league.id, user.id, day);
+      // TV-Grafik rendern (Spielfeld + Porträts); bei Fehlern Text-Fallback
+      if (lineup.length > 0) {
+        try {
+          const png = await renderLineupImage({
+            managerName: user.name, managerImage: user.image,
+            leagueName: league.name, day, totalPoints, lineup,
+          });
+          const file = new AttachmentBuilder(png, { name: "aufstellung.png" });
+          const embed = new EmbedBuilder()
+            .setTitle(`⚽ Aufstellung — ${user.name}`)
+            .setImage("attachment://aufstellung.png")
+            .setColor(0x16a34a)
+            .setTimestamp(new Date())
+            .setFooter({ text: `${league.name} · Spieltag ${day}` });
+          return interaction.editReply({ embeds: [embed], files: [file] });
+        } catch (e) {
+          console.warn("[Lineup] Bild-Render fehlgeschlagen, nutze Text-Fallback:", e.message);
+        }
+      }
       return interaction.editReply({ embeds: [lineupEmbed(league.name, user, day, lineup, totalPoints, _rawSample)] });
     }
   } catch (e) {
