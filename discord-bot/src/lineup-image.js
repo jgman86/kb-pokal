@@ -33,10 +33,25 @@ async function fetchPortrait(p) {
   return (p.id && await fetchDataUri(`pool/playersbig/${p.id}.png`)) || (p.image && await fetchDataUri(p.image)) || null;
 }
 
+// Vereinswappen (pool/teams/{tid}.png) — fit "contain", damit nichts
+// vom Logo abgeschnitten wird. Die Fotos sind oft veraltet (falsches
+// Trikot nach Transfers) — das Badge zeigt den AKTUELLEN Verein.
+async function fetchBadge(tid) {
+  if (!tid) return null;
+  try {
+    const r = await fetch(`${CDN}pool/teams/${tid}.png`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    const png = await sharp(buf).resize(64, 64, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+    return `data:image/png;base64,${png.toString("base64")}`;
+  } catch { return null; }
+}
+
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Ein Spieler-Knoten: Porträt im Kreis (oder Initialen), Name-Pill, Punkte-Pill
-function playerNode(p, x, y, img, idx) {
+// Ein Spieler-Knoten: Porträt im Kreis (oder Initialen), Wappen-Badge
+// (aktueller Verein) unten rechts am Porträt, Name-Pill, Punkte-Pill
+function playerNode(p, x, y, img, idx, badge) {
   const name = esc((p.lastName || "?").slice(0, 14));
   const pts = p.points;
   const ptsColor = pts > 0 ? "#16a34a" : pts < 0 ? "#dc2626" : "#475569";
@@ -50,6 +65,7 @@ function playerNode(p, x, y, img, idx) {
   <circle cx="${x}" cy="${y}" r="${AV_R}" fill="#1e293b"/>
   ${portrait}
   <circle cx="${x}" cy="${y}" r="${AV_R + 2}" fill="none" stroke="#f8fafc" stroke-width="3"/>
+  ${badge ? `<circle cx="${x + 37}" cy="${y + 37}" r="17" fill="#f8fafc"/><image href="${badge}" x="${x + 24}" y="${y + 24}" width="26" height="26"/>` : ""}
   <rect x="${x - 62}" y="${y + AV_R + 8}" width="124" height="26" rx="13" fill="#0f172aE6"/>
   <text x="${x}" y="${y + AV_R + 26}" text-anchor="middle" font-size="15" font-weight="600" fill="#f8fafc" font-family="DejaVu Sans, sans-serif">${name}</text>
   <rect x="${x - 30}" y="${y + AV_R + 38}" width="60" height="24" rx="12" fill="${ptsColor}"/>
@@ -65,9 +81,14 @@ export async function renderLineupImage({ managerName, managerImage, leagueName,
   const top = 150, bottom = 970;
   const rowY = usedRows.map((_, i) => usedRows.length === 1 ? (top + bottom) / 2 : top + 80 + (i * (bottom - top - 160)) / (usedRows.length - 1));
 
-  // Alle Bilder parallel laden (11 Porträts + Manager-Avatar)
-  const imgs = await Promise.all(lineup.map((p) => fetchPortrait(p)));
-  const mgrImg = await fetchDataUri(managerImage);
+  // Alle Bilder parallel laden (11 Porträts + Wappen je Verein + Manager-Avatar)
+  const uniqueTids = [...new Set(lineup.map((p) => p.teamId).filter(Boolean))];
+  const [imgs, mgrImg, ...badgeList] = await Promise.all([
+    Promise.all(lineup.map((p) => fetchPortrait(p))),
+    fetchDataUri(managerImage),
+    ...uniqueTids.map((tid) => fetchBadge(tid)),
+  ]);
+  const badges = Object.fromEntries(uniqueTids.map((tid, i) => [tid, badgeList[i]]));
 
   let nodes = "", idx = 0;
   usedRows.forEach((posKey, ri) => {
@@ -75,7 +96,7 @@ export async function renderLineupImage({ managerName, managerImage, leagueName,
     const spacing = Math.min(190, (W - 140) / Math.max(1, row.length));
     row.forEach((p, i) => {
       const x = W / 2 + (i - (row.length - 1) / 2) * spacing;
-      nodes += playerNode(p, x, rowY[ri], imgs[lineup.indexOf(p)], idx++);
+      nodes += playerNode(p, x, rowY[ri], imgs[lineup.indexOf(p)], idx++, p.teamId ? badges[p.teamId] : null);
     });
   });
 
