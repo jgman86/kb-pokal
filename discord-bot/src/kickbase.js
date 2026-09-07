@@ -369,7 +369,7 @@ export async function getLineup(leagueId, userId, dayNumber) {
       get(`/v4/leagues/${encodeURIComponent(leagueId)}/players/${encodeURIComponent(pid)}`).catch(() => null)));
     missingIds.forEach((pid, i) => {
       const d = details[i];
-      if (d) squadById[pid] = { pn: d.ln || d.n || d.pn || "?", pos: d.pos ?? null, pim: d.pim || null, st: d.st ?? null };
+      if (d) squadById[pid] = { pn: d.ln || d.n || d.pn || "?", pos: d.pos ?? null, pim: d.pim || null, st: d.st ?? null, tid: d.tid ?? null };
     });
   }
 
@@ -397,6 +397,7 @@ export async function getLineup(leagueId, userId, dayNumber) {
       points: pointsForDay(perfs[i]),
       status: sq.st ?? null,
       image: sq.pim || null, // CDN-Pfad des Spielerporträts (kickbase.b-cdn.net)
+      teamId: sq.tid != null ? String(sq.tid) : null, // aktueller Verein (fürs Wappen-Badge)
     };
   });
 
