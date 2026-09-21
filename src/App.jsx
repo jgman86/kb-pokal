@@ -5,7 +5,7 @@ import {
   rpcHasPassword, rpcVerifyPassword, rpcSetPassword, rpcChangePassword, rpcSetParticipantPassword,
   rpcSave, rpcCreate, rpcDelete,
   loadTournament, listTournaments,
-  normalize, resolveTiebreak, seededPairings, randomPairings, generateSchedule,
+  normalize, resolveTiebreak, seededPairings, randomPairings, playInSplit, generateSchedule,
   computeStats, postDiscord, kbFetch,
   requestNotificationPermission, notify,
   formatDeadline, timeUntil,
@@ -264,16 +264,17 @@ function Tournament({ session, onLogout }) {
 
   const drawR = () => {
     if (!isAdmin) return;
-    const { pairings, bye } = data.config.useSeeding ? seededPairings(act) : randomPairings(act);
+    const { pairings, byes } = data.config.useSeeding ? seededPairings(act) : randomPairings(act);
     const rn = data.currentRound + 1;
     const scheduled = (data.schedule || []).find((x) => x.roundNumber === rn);
+    const isPlayIn = playInSplit(act.length).isPlayIn;
     const round = {
       roundNumber: rn,
-      name: getRoundName(act.length, rn),
+      name: isPlayIn ? "Ausscheidungsrunde" : getRoundName(act.length, rn),
       matchday: scheduled ? `Spieltag ${scheduled.matchday}` : "",
       deadline: null,
       pairings,
-      bye,
+      byes,
       status: "active",
     };
     setAnimDraw(true); setDrawn([]);
@@ -287,7 +288,7 @@ function Tournament({ session, onLogout }) {
       postDiscord("draw", {
         cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
         pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p1Liga: gp(m.player1Id)?.league || "", p2: gp(m.player2Id)?.name || "?", p2Liga: gp(m.player2Id)?.league || "" })),
-        bye: bye ? gp(bye)?.name : null,
+        byes: byes.map((id) => gp(id)?.name).filter(Boolean),
         remaining: act.length, totalPlayers: nd.players.length,
       });
       maybeNotifyDraw(nd, identity);
@@ -915,7 +916,10 @@ function Tournament({ session, onLogout }) {
         {view === "draw" && data.status === "running" && isAdmin && <div style={s.fade}>
           <div style={s.card} className="card">
             <h2 style={s.cT}>🎲 Auslosung — {getRoundName(act.length, data.currentRound + 1)}</h2>
-            <p style={s.dI}>{act.length} → {Math.floor(act.length / 2)} Duelle{act.length % 2 === 1 && " + 1 Freilos"}</p>
+            {(() => {
+              const split = playInSplit(act.length);
+              return <p style={s.dI}>{act.length} → {split.matches} {split.isPlayIn ? "Play-in-Duell" : "Duell"}{split.matches === 1 ? "" : "e"}{split.byes > 0 && ` + ${split.byes} Freilos${split.byes === 1 ? "" : "e"}`}{split.isPlayIn && " · danach glatter K.o.-Baum ohne weitere Freilose"}</p>;
+            })()}
             {(() => {
               const sched = (data.schedule || []).find((x) => x.roundNumber === data.currentRound + 1);
               return sched ? <p style={{ ...s.hint, color: "#fbbf24", fontSize: 13 }}>📅 Diese Runde ist für <b>Spieltag {sched.matchday}</b>{sched.isFinal ? " (Finale)" : ""} vorgesehen</p> : null;
@@ -1047,7 +1051,10 @@ function Tournament({ session, onLogout }) {
               </div>
             );
           })}
-          {cr.bye && <div style={s.byC}>🎫 {gp(cr.bye)?.name} — Freilos</div>}
+          {(() => {
+            const byes = cr.byes || (cr.bye ? [cr.bye] : []);
+            return byes.length > 0 && <div style={s.byC}>🎫 Freilos{byes.length === 1 ? "" : "e"}: {byes.map((id) => gp(id)?.name).filter(Boolean).join(", ")}</div>;
+          })()}
           {cr.status === "active" && isAdmin && <button className="btn" style={{ ...s.bCp, opacity: allScoresDone ? 1 : .4 }} disabled={!allScoresDone} onClick={() => setConfirm("complete")}>✓ Runde abschließen</button>}
           {cr.status === "active" && !allScoresDone && isAdmin && <p style={s.hint}>Alle Duelle müssen klaren Sieger haben (Gleichstand wird beim Abschluss entschieden)</p>}
         </div>}
@@ -1071,7 +1078,10 @@ function Tournament({ session, onLogout }) {
                 </div>
               );
             })}
-            {r.bye && <div style={s.hB}>🎫 {gp(r.bye)?.name} — Freilos</div>}
+            {(() => {
+              const byes = r.byes || (r.bye ? [r.bye] : []);
+              return byes.length > 0 && <div style={s.hB}>🎫 Freilos{byes.length === 1 ? "" : "e"}: {byes.map((id) => gp(id)?.name).filter(Boolean).join(", ")}</div>;
+            })()}
           </div>
         ))}</div>}
 

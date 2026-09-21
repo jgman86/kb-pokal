@@ -138,34 +138,45 @@ export function resolveTiebreak(pairing, p1, p2, mode) {
 }
 
 // ============================================
-// Seeding — TOP Spieler treffen erst spät aufeinander
+// Auslosung — Play-in-Regel (DFB-Pokal-Prinzip)
 // ============================================
+// Ist die Teilnehmerzahl keine Zweierpotenz, spielen nur so viele Duelle,
+// dass danach eine Zweierpotenz übrig bleibt — alle anderen haben einmalig
+// frei. Ab dann halbiert sich das Feld sauber ohne weitere Freilose.
+// Beispiel 17: 1 Play-in-Duell + 15 Freilose → 16 → 8 → 4 → 2 → 1.
+// Bei Zweierpotenzen (16, 8, ...) ist es eine normale volle Runde.
+export function playInSplit(n) {
+  const pow = 2 ** Math.floor(Math.log2(Math.max(2, n)));
+  const excess = n - pow;
+  const matches = excess > 0 ? excess : n / 2;
+  return { matches, byes: n - 2 * matches, isPlayIn: excess > 0 };
+}
+
+const mkPairing = (p1, p2) => ({ id: generateId(), player1Id: p1.id, player2Id: p2.id, score1: null, score2: null, winner: null, tiebreakMethod: null, comments: [], predictions: [], leg1: null, leg2: null });
+
+// Setzliste: die niedrigsten Seeds müssen ins Play-in, die Top-Seeds haben
+// frei. In vollen Runden wie gehabt 1 vs n, 2 vs n-1, ...
 export function seededPairings(players) {
-  // Standard-Setzliste: 1 vs n, 2 vs n-1, 3 vs n-2, ...
-  // Danach nächste Runde: 1 vs 2 (durchgesetzt), 3 vs 4, ...
   const sorted = [...players].sort((a, b) => (b.seed || 0) - (a.seed || 0));
-  const n = sorted.length;
+  const { matches } = playInSplit(sorted.length);
+  const byes = sorted.slice(0, sorted.length - 2 * matches).map((p) => p.id);
+  const pool = sorted.slice(sorted.length - 2 * matches);
   const pairings = [];
-  let bye = null;
-  // Wenn ungerade → stärkster Spieler bekommt Freilos
-  let pool = sorted;
-  if (n % 2 === 1) { bye = sorted[0].id; pool = sorted.slice(1); }
-  const half = pool.length / 2;
-  for (let i = 0; i < half; i++) {
-    pairings.push({ id: generateId(), player1Id: pool[i].id, player2Id: pool[pool.length - 1 - i].id, score1: null, score2: null, winner: null, tiebreakMethod: null, comments: [], predictions: [], leg1: null, leg2: null });
+  for (let i = 0; i < matches; i++) {
+    pairings.push(mkPairing(pool[i], pool[pool.length - 1 - i]));
   }
-  return { pairings, bye };
+  return { pairings, byes };
 }
 
 export function randomPairings(players) {
   const sh = shuffle(players);
+  const { matches } = playInSplit(sh.length);
   const pairings = [];
-  let bye = null;
-  for (let i = 0; i < sh.length - 1; i += 2) {
-    pairings.push({ id: generateId(), player1Id: sh[i].id, player2Id: sh[i + 1].id, score1: null, score2: null, winner: null, tiebreakMethod: null, comments: [], predictions: [], leg1: null, leg2: null });
+  for (let i = 0; i < matches * 2; i += 2) {
+    pairings.push(mkPairing(sh[i], sh[i + 1]));
   }
-  if (sh.length % 2 === 1) bye = sh[sh.length - 1].id;
-  return { pairings, bye };
+  const byes = sh.slice(matches * 2).map((p) => p.id);
+  return { pairings, byes };
 }
 
 // ============================================

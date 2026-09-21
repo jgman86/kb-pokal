@@ -103,7 +103,8 @@ function buildEmbed(event, p) {
 
   if (event === "draw") {
     const pairings = p.pairings || [];
-    const byeTxt = p.bye ? `\n\n🎟️ **Freilos:** ${p.bye}` : "";
+    const byes = p.byes || (p.bye ? [p.bye] : []);
+    const byeTxt = byes.length ? `\n\n🎟️ **Freilos${byes.length === 1 ? "" : `e (${byes.length})`}:** ${byes.join(", ")}` : "";
     const header = `📅 **${md || "Spieltag steht noch aus"}** · ${pairings.length} Duell${pairings.length === 1 ? "" : "e"}${p.remaining != null ? ` · ${p.remaining} noch dabei` : ""}`;
     return {
       title: `🎲 Auslosung — ${p.roundName}`,
