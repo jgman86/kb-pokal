@@ -51,37 +51,43 @@ async function fetchTournament() {
 }
 
 // ── Rendering ───────────────────────────────────────────
+// Seiten eines Tipp-Eintrags: p1/p2 und bei Dreier-Duellen p3.
+const sidesOf = (t) => (t.p3 ? ["p1", "p2", "p3"] : ["p1", "p2"]);
 const counts = (t) => {
   const vals = Object.values(t.votes || {});
-  const n1 = vals.filter((v) => v === "p1").length;
-  const n2 = vals.filter((v) => v === "p2").length;
-  return { n1, n2, total: n1 + n2 };
+  const bySide = {};
+  for (const s of sidesOf(t)) bySide[s] = vals.filter((v) => v === s).length;
+  return { bySide, total: vals.length };
 };
 const quote = (total, n) => (n > 0 ? Math.round((total / n) * 100) / 100 : null);
 const fmtQ = (q) => (q == null ? "–" : q.toFixed(2).replace(".", ","));
 
 function tipEmbed(t, { result = null } = {}) {
-  const { n1, n2, total } = counts(t);
-  const pct1 = total ? Math.round((n1 / total) * 100) : 0;
-  const pct2 = total ? 100 - pct1 : 0;
-  const filled = total ? Math.round((n1 / total) * 10) : 5;
-  const bar = "▰".repeat(filled) + "▱".repeat(10 - filled);
-  const q1 = quote(total, n1), q2 = quote(total, n2);
+  const sides = sidesOf(t);
+  const { bySide, total } = counts(t);
+  const vsLine = sides.map((s) => `**${t[s].name}** \`${t[s].liga}\``).join("  vs  ");
+  const statLine = sides.map((s) => bySide[s]).join(" : ");
+  const pctLine = total ? ` (${sides.map((s) => Math.round((bySide[s] / total) * 100) + "%").join(" / ")})` : " — noch keine Tipps";
+  const quoteLine = sides.map((s) => `**${fmtQ(quote(total, bySide[s]))}**`).join(" / ");
 
   const lines = [
     `📅 **${t.roundName}**${t.matchday ? ` · Spieltag ${t.matchday}` : ""}`,
     "",
-    `⚔️ **${t.p1.name}** \`${t.p1.liga}\`  vs  **${t.p2.name}** \`${t.p2.liga}\``,
+    `${t.p3 ? "🎯" : "⚔️"} ${vsLine}${t.p3 ? "\n_Dreier-Duell — nur Platz 1 kommt weiter!_" : ""}`,
     "",
-    `📊 **${n1} : ${n2}**${total ? ` (${pct1}% / ${pct2}%)` : " — noch keine Tipps"}`,
-    `💰 Community-Quote: **${fmtQ(q1)}** / **${fmtQ(q2)}**`,
-    `${t.p1.name} ${bar} ${t.p2.name}`,
+    `📊 **${statLine}**${pctLine}`,
+    `💰 Community-Quote: ${quoteLine}`,
   ];
+  if (!t.p3 && total) {
+    const filled = Math.round((bySide.p1 / total) * 10);
+    lines.push(`${t.p1.name} ${"▰".repeat(filled)}${"▱".repeat(10 - filled)} ${t.p2.name}`);
+  }
   let color = COLOR_OPEN, footer = "🟢 Tippen offen — Stimme jederzeit änderbar";
   if (result) {
-    const winName = result.side === "p1" ? t.p1.name : t.p2.name;
-    const wq = result.side === "p1" ? q1 : q2;
-    lines.push("", `🏁 **Sieger: ${winName}** (${result.score1}:${result.score2})`,
+    const winName = t[result.side].name;
+    const wq = quote(total, bySide[result.side]);
+    const scoreTxt = [result.score1, result.score2, result.score3].filter((x) => x != null).join(":");
+    lines.push("", `🏁 **Sieger: ${winName}** (${scoreTxt})`,
       result.winners > 0
         ? `✓ ${result.winners} richtige${result.winners === 1 ? "r" : ""} Tipp${result.winners === 1 ? "" : "s"} — je **+${fmtQ(wq)} Punkte**`
         : "_Niemand hat richtig getippt._");
@@ -90,7 +96,7 @@ function tipEmbed(t, { result = null } = {}) {
     color = COLOR_LOCKED; footer = "🔒 Tipps gesperrt";
   }
   return new EmbedBuilder()
-    .setTitle(`🎯 Tippspiel — ${t.p1.name} vs ${t.p2.name}`)
+    .setTitle(`🎯 Tippspiel — ${sides.map((s) => t[s].name).join(" vs ")}`)
     .setDescription(lines.join("\n"))
     .setColor(color)
     .setFooter({ text: footer })
@@ -98,9 +104,10 @@ function tipEmbed(t, { result = null } = {}) {
 }
 
 function tipButtons(t, disabled = false) {
+  const styles = { p1: ButtonStyle.Primary, p2: ButtonStyle.Success, p3: ButtonStyle.Danger };
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`tipp|${t.pairingId}|p1`).setLabel(`${t.p1.name} tippen`).setStyle(ButtonStyle.Primary).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`tipp|${t.pairingId}|p2`).setLabel(`${t.p2.name} tippen`).setStyle(ButtonStyle.Success).setDisabled(disabled),
+    sidesOf(t).map((s) =>
+      new ButtonBuilder().setCustomId(`tipp|${t.pairingId}|${s}`).setLabel(`${t[s].name} tippen`).setStyle(styles[s]).setDisabled(disabled)),
   );
 }
 
@@ -138,13 +145,16 @@ async function postRoundPairings(channel, data, store) {
     if (store.open[pairing.id] || store.resolvedIds.includes(pairing.id)) { skipped++; continue; }
     if (pairing.score1 != null && pairing.score2 != null) { skipped++; continue; } // schon gespielt
     const p1 = player(pairing.player1Id), p2 = player(pairing.player2Id);
+    const p3 = pairing.player3Id ? player(pairing.player3Id) : null;
     if (!p1 || !p2) { skipped++; continue; }
+    const mkSide = (pl) => ({ id: pl.id, name: pl.name, liga: shortLiga(pl.league) || pl.league || "?" });
     const t = {
       pairingId: pairing.id,
       roundName: round.name,
       matchday: (round.matchday || "").match(/\d+/)?.[0] || null,
-      p1: { id: p1.id, name: p1.name, liga: shortLiga(p1.league) || p1.league || "?" },
-      p2: { id: p2.id, name: p2.name, liga: shortLiga(p2.league) || p2.league || "?" },
+      p1: mkSide(p1),
+      p2: mkSide(p2),
+      ...(p3 ? { p3: mkSide(p3) } : {}),
       votes: {}, voterNames: {}, locked: false,
       channelId: channel.id, messageId: null,
     };
@@ -168,12 +178,19 @@ async function resolveAll(client, data, store) {
   for (const t of Object.values(store.open)) {
     const pairing = allPairings.get(t.pairingId);
     if (!pairing) continue;
-    const done = pairing.score1 != null && pairing.score2 != null;
-    const winnerId = pairing.winner || (done && pairing.score1 !== pairing.score2 ? (pairing.score1 > pairing.score2 ? pairing.player1Id : pairing.player2Id) : null);
-    if (!winnerId) continue; // noch nicht entschieden
-    const side = winnerId === t.p1.id ? "p1" : "p2";
-    const { n1, n2, total } = counts(t);
-    const wq = quote(total, side === "p1" ? n1 : n2);
+    const isTriple = !!t.p3;
+    const done = pairing.score1 != null && pairing.score2 != null && (!isTriple || pairing.score3 != null);
+    let winnerId = pairing.winner || null;
+    if (!winnerId && done && !isTriple && pairing.score1 !== pairing.score2) {
+      winnerId = pairing.score1 > pairing.score2 ? pairing.player1Id : pairing.player2Id;
+    }
+    // Dreier-Duelle ohne gesetzten winner: warten bis die App die Runde
+    // abschließt (Gleichstand-Auflösung passiert dort)
+    if (!winnerId) continue;
+    const side = winnerId === t.p1.id ? "p1" : winnerId === t.p2.id ? "p2" : "p3";
+    if (side === "p3" && !isTriple) continue;
+    const { bySide, total } = counts(t);
+    const wq = quote(total, bySide[side]);
     let winners = 0;
     for (const [uid, vote] of Object.entries(t.votes)) {
       const sc = store.scores[uid] || { name: t.voterNames[uid] || "?", points: 0, correct: 0, total: 0 };
@@ -182,7 +199,7 @@ async function resolveAll(client, data, store) {
       if (vote === side) { sc.points += wq || 0; sc.correct++; winners++; }
       store.scores[uid] = sc;
     }
-    const result = { side, score1: pairing.score1, score2: pairing.score2, winners };
+    const result = { side, score1: pairing.score1, score2: pairing.score2, score3: isTriple ? pairing.score3 : null, winners };
     await editTipMessage(client, t, { embeds: [tipEmbed({ ...t, locked: true }, { result })], components: [] }).catch((e) => console.warn("[Tipp] resolve edit failed:", e.message));
     store.resolvedIds.push(t.pairingId);
     delete store.open[t.pairingId];
@@ -266,12 +283,13 @@ export async function handleTippButton(interaction) {
   const t = store.open[pairingId];
   if (!t) return interaction.reply({ content: "Dieses Tipp-Duell ist nicht mehr aktiv.", ephemeral: true });
   if (t.locked) return interaction.reply({ content: "🔒 Tipps für dieses Duell sind gesperrt.", ephemeral: true });
+  if (!t[side]) return interaction.reply({ content: "Ungültige Auswahl.", ephemeral: true });
   const uid = interaction.user.id;
   const prev = t.votes[uid];
   t.votes[uid] = side;
   t.voterNames[uid] = interaction.member?.displayName || interaction.user.username;
   saveStore(store);
-  const name = side === "p1" ? t.p1.name : t.p2.name;
+  const name = t[side].name;
   await interaction.update({ embeds: [tipEmbed(t)], components: [tipButtons(t)] });
   if (prev !== side) {
     await interaction.followUp({ content: `✓ Dein Tipp: **${name}**${prev ? " (geändert)" : ""}`, ephemeral: true }).catch(() => {});

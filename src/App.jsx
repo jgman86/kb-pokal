@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
 import { supabase } from "./supabase.js";
 import {
   DEFAULT_TID, LOCAL_MODE, generateId, getRoundName, hashPassword, isRpcError,
   rpcHasPassword, rpcVerifyPassword, rpcSetPassword, rpcChangePassword, rpcSetParticipantPassword,
   rpcSave, rpcCreate, rpcDelete,
   loadTournament, listTournaments,
-  normalize, resolveTiebreak, seededPairings, randomPairings, playInSplit, generateSchedule,
+  normalize, resolveTiebreak, resolveTripleWinner, seededPairings, randomPairings, roundSplit, generateSchedule,
   computeStats, postDiscord, kbFetch,
   requestNotificationPermission, notify,
   formatDeadline, timeUntil,
@@ -204,7 +204,9 @@ function Tournament({ session, onLogout }) {
   const act = data.players.filter((p) => !p.eliminated);
   const cr = data.rounds.find((r) => r.roundNumber === data.currentRound);
   const W = data.status === "finished" ? act[0] : null;
-  const allScoresDone = cr?.pairings.every((p) => p.winner != null || (p.score1 != null && p.score2 != null && p.score1 !== p.score2));
+  const allScoresDone = cr?.pairings.every((p) => p.winner != null || (p.player3Id
+    ? (p.score1 != null && p.score2 != null && p.score3 != null)
+    : (p.score1 != null && p.score2 != null && p.score1 !== p.score2)));
   const stats = useMemo(() => computeStats(data), [data]);
 
   // ── Player CRUD (admin only)
@@ -267,10 +269,9 @@ function Tournament({ session, onLogout }) {
     const { pairings, byes } = data.config.useSeeding ? seededPairings(act) : randomPairings(act);
     const rn = data.currentRound + 1;
     const scheduled = (data.schedule || []).find((x) => x.roundNumber === rn);
-    const isPlayIn = playInSplit(act.length).isPlayIn;
     const round = {
       roundNumber: rn,
-      name: isPlayIn ? "Ausscheidungsrunde" : getRoundName(act.length, rn),
+      name: getRoundName(act.length, rn),
       matchday: scheduled ? `Spieltag ${scheduled.matchday}` : "",
       deadline: null,
       pairings,
@@ -287,7 +288,11 @@ function Tournament({ session, onLogout }) {
       // Discord + notify
       postDiscord("draw", {
         cupName: nd.cupName, roundName: round.name, matchday: round.matchday,
-        pairings: pairings.map((m) => ({ p1: gp(m.player1Id)?.name || "?", p1Liga: gp(m.player1Id)?.league || "", p2: gp(m.player2Id)?.name || "?", p2Liga: gp(m.player2Id)?.league || "" })),
+        pairings: pairings.map((m) => ({
+          p1: gp(m.player1Id)?.name || "?", p1Liga: gp(m.player1Id)?.league || "",
+          p2: gp(m.player2Id)?.name || "?", p2Liga: gp(m.player2Id)?.league || "",
+          ...(m.player3Id ? { p3: gp(m.player3Id)?.name || "?", p3Liga: gp(m.player3Id)?.league || "" } : {}),
+        })),
         byes: byes.map((id) => gp(id)?.name).filter(Boolean),
         remaining: act.length, totalPlayers: nd.players.length,
       });
@@ -313,8 +318,8 @@ function Tournament({ session, onLogout }) {
     if (isAdmin) return true;
     if (!identity) return false;
     const ident = identity.toLowerCase();
-    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id);
-    return p1?.name.toLowerCase() === ident || p2?.name.toLowerCase() === ident;
+    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id), p3 = gp(pairing.player3Id);
+    return p1?.name.toLowerCase() === ident || p2?.name.toLowerCase() === ident || p3?.name.toLowerCase() === ident;
   };
 
   const saveSc = (pid) => {
@@ -327,6 +332,29 @@ function Tournament({ session, onLogout }) {
     const pi = prs.findIndex((p) => p.id === pid);
     if (pi < 0) return;
     const existing = prs[pi];
+    // Dreier-Duell: drei Scores, kein twoLeg-Modus
+    if (existing.player3Id) {
+      const s3 = parseFloat(scInp.s3);
+      if (isNaN(s3)) return;
+      prs[pi] = { ...existing, score1: s1, score2: s2, score3: s3 };
+      rounds[ri] = { ...rounds[ri], pairings: prs };
+      const nd = { ...data, rounds };
+      save(nd);
+      setEditSc(null); setScInp({ s1: "", s2: "", s3: "", leg: 1 });
+      const p1 = gp(existing.player1Id), p2 = gp(existing.player2Id), p3 = gp(existing.player3Id);
+      const top = Math.max(s1, s2, s3);
+      const leaders = [[p1, s1], [p2, s2], [p3, s3]].filter(([, sc]) => sc === top);
+      const doneCount = rounds[ri].pairings.filter((x) => x.score1 != null && x.score2 != null && (!x.player3Id || x.score3 != null)).length;
+      postDiscord("result", {
+        cupName: nd.cupName, roundName: rounds[ri].name, matchday: rounds[ri].matchday,
+        p1: p1?.name, p1Liga: p1?.league || "", p2: p2?.name, p2Liga: p2?.league || "",
+        p3: p3?.name, p3Liga: p3?.league || "",
+        s1, s2, s3,
+        winner: leaders.length === 1 ? leaders[0][0]?.name : "offen (Gleichstand)",
+        progress: { done: doneCount, total: rounds[ri].pairings.length },
+      });
+      return;
+    }
     if (data.config.tiebreakMode === "twoLeg") {
       const key = scInp.leg === 2 ? "leg2" : "leg1";
       prs[pi] = { ...existing, [key]: { score1: s1, score2: s2 } };
@@ -369,13 +397,18 @@ function Tournament({ session, onLogout }) {
     const ri = rounds.findIndex((r) => r.roundNumber === data.currentRound);
     if (ri < 0) return;
     const round = rounds[ri];
-    if (round.pairings.some((p) => p.score1 == null || p.score2 == null)) return;
+    if (round.pairings.some((p) => p.score1 == null || p.score2 == null || (p.player3Id && p.score3 == null))) return;
 
     const players = [...data.players];
     const mode = data.config.tiebreakMode;
     const newPairings = round.pairings.map((p) => {
       const p1 = players.find((x) => x.id === p.player1Id);
       const p2 = players.find((x) => x.id === p.player2Id);
+      if (p.player3Id) {
+        const p3 = players.find((x) => x.id === p.player3Id);
+        const res = resolveTripleWinner(p, p1, p2, p3);
+        return { ...p, winner: res.winner, tiebreakMethod: res.method };
+      }
       const res = resolveTiebreak(p, p1, p2, mode);
       return { ...p, winner: res.winner || (p.score1 > p.score2 ? p.player1Id : p.score2 > p.score1 ? p.player2Id : null), tiebreakMethod: res.method };
     });
@@ -383,9 +416,11 @@ function Tournament({ session, onLogout }) {
     const eliminated = [];
     newPairings.forEach((p) => {
       if (!p.winner) return;
-      const loserId = p.winner === p.player1Id ? p.player2Id : p.player1Id;
-      const idx = players.findIndex((x) => x.id === loserId);
-      if (idx >= 0) { players[idx] = { ...players[idx], eliminated: true }; eliminated.push(players[idx].name); }
+      const loserIds = [p.player1Id, p.player2Id, p.player3Id].filter((id) => id && id !== p.winner);
+      for (const loserId of loserIds) {
+        const idx = players.findIndex((x) => x.id === loserId);
+        if (idx >= 0) { players[idx] = { ...players[idx], eliminated: true }; eliminated.push(players[idx].name); }
+      }
     });
     rounds[ri] = { ...round, pairings: newPairings, status: "completed" };
     const rem = players.filter((p) => !p.eliminated);
@@ -403,8 +438,9 @@ function Tournament({ session, onLogout }) {
     const matchRows = newPairings.map((mp) => {
       const a = players.find((x) => x.id === mp.player1Id);
       const b = players.find((x) => x.id === mp.player2Id);
-      const wn = mp.winner === mp.player1Id ? a?.name : mp.winner === mp.player2Id ? b?.name : null;
-      return { p1: a?.name || "?", p2: b?.name || "?", s1: mp.score1, s2: mp.score2, winner: wn, tiebreak: mp.tiebreakMethod };
+      const c = mp.player3Id ? players.find((x) => x.id === mp.player3Id) : null;
+      const wn = mp.winner === mp.player1Id ? a?.name : mp.winner === mp.player2Id ? b?.name : mp.winner === mp.player3Id ? c?.name : null;
+      return { p1: a?.name || "?", p2: b?.name || "?", s1: mp.score1, s2: mp.score2, ...(c ? { p3: c?.name || "?", s3: mp.score3 } : {}), winner: wn, tiebreak: mp.tiebreakMethod };
     });
     const nextScheduled = !fin ? (nd.schedule || []).find((x) => x.roundNumber === round.roundNumber + 1) : null;
     postDiscord("elimination", {
@@ -581,8 +617,8 @@ function Tournament({ session, onLogout }) {
     if (!md) { alert('Spieltag-Feld ausfüllen (z.B. "15").'); return; }
     setKbBusy(true);
     const needed = new Set(cr.pairings.flatMap((p) => {
-      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-      return [p1?.kickbaseLeagueId, p2?.kickbaseLeagueId].filter(Boolean);
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id), p3 = gp(p.player3Id);
+      return [p1?.kickbaseLeagueId, p2?.kickbaseLeagueId, p3?.kickbaseLeagueId].filter(Boolean);
     }));
     if (needed.size === 0) { setKbBusy(false); alert("Keine Teilnehmer mit Kickbase-Zuordnung. Im Players-Tab verknüpfen."); return; }
     const pointsByLid = {};
@@ -592,11 +628,12 @@ function Tournament({ session, onLogout }) {
       pointsByLid[lid] = Object.fromEntries((r.points || []).map((x) => [x.id, x.points]));
     }
     const results = cr.pairings.map((p) => {
-      const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-      const s1 = (p1?.kickbaseLeagueId && p1?.kickbaseUserId) ? pointsByLid[p1.kickbaseLeagueId]?.[p1.kickbaseUserId] ?? null : null;
-      const s2 = (p2?.kickbaseLeagueId && p2?.kickbaseUserId) ? pointsByLid[p2.kickbaseLeagueId]?.[p2.kickbaseUserId] ?? null : null;
-      const missing = [!p1?.kickbaseUserId && p1?.name, !p2?.kickbaseUserId && p2?.name].filter(Boolean);
-      return { pairingId: p.id, p1Name: p1?.name, p2Name: p2?.name, s1, s2, missing };
+      const p1 = gp(p.player1Id), p2 = gp(p.player2Id), p3 = gp(p.player3Id);
+      const pts = (pl) => (pl?.kickbaseLeagueId && pl?.kickbaseUserId) ? pointsByLid[pl.kickbaseLeagueId]?.[pl.kickbaseUserId] ?? null : null;
+      const s1 = pts(p1), s2 = pts(p2);
+      const s3 = p.player3Id ? pts(p3) : undefined;
+      const missing = [!p1?.kickbaseUserId && p1?.name, !p2?.kickbaseUserId && p2?.name, p.player3Id && !p3?.kickbaseUserId && p3?.name].filter(Boolean);
+      return { pairingId: p.id, p1Name: p1?.name, p2Name: p2?.name, p3Name: p3?.name, s1, s2, s3, missing };
     });
     setKbFetchModal({ results, md });
     setKbBusy(false);
@@ -613,6 +650,7 @@ function Tournament({ session, onLogout }) {
       const patch = {};
       if (r.s1 != null) patch.score1 = r.s1;
       if (r.s2 != null) patch.score2 = r.s2;
+      if (p.player3Id && r.s3 != null) patch.score3 = r.s3;
       return { ...p, ...patch };
     });
     rounds[ri] = { ...rounds[ri], pairings: prs };
@@ -622,15 +660,15 @@ function Tournament({ session, onLogout }) {
 
   const openLineup = async (pairing, round) => {
     const md = round.matchday && round.matchday.match(/\d+/)?.[0];
-    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id);
-    setLineupModal({ pairing, round, loading: true, p1Lineup: null, p2Lineup: null, error: null, md, p1, p2 });
+    const p1 = gp(pairing.player1Id), p2 = gp(pairing.player2Id), p3 = pairing.player3Id ? gp(pairing.player3Id) : null;
+    setLineupModal({ pairing, round, loading: true, p1Lineup: null, p2Lineup: null, p3Lineup: null, error: null, md, p1, p2, p3 });
     if (!md) { setLineupModal((m) => ({ ...m, loading: false, error: "Kein Spieltag in der Runde gesetzt." })); return; }
     if (LOCAL_MODE) { setLineupModal((m) => ({ ...m, loading: false, error: "Lokaler Modus — Kickbase-Fetch nicht verfügbar." })); return; }
-    const [l1, l2] = await Promise.all([
-      p1?.kickbaseLeagueId && p1?.kickbaseUserId ? kbFetch("lineup", { lid: p1.kickbaseLeagueId, uid: p1.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
-      p2?.kickbaseLeagueId && p2?.kickbaseUserId ? kbFetch("lineup", { lid: p2.kickbaseLeagueId, uid: p2.kickbaseUserId, md }, session.hash) : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" }),
-    ]);
-    setLineupModal((m) => ({ ...m, loading: false, p1Lineup: l1, p2Lineup: l2 }));
+    const fetchFor = (pl) => pl?.kickbaseLeagueId && pl?.kickbaseUserId
+      ? kbFetch("lineup", { lid: pl.kickbaseLeagueId, uid: pl.kickbaseUserId, md }, session.hash)
+      : Promise.resolve({ __error: true, error: "Kein Kickbase-Mapping" });
+    const [l1, l2, l3] = await Promise.all([fetchFor(p1), fetchFor(p2), p3 ? fetchFor(p3) : Promise.resolve(null)]);
+    setLineupModal((m) => ({ ...m, loading: false, p1Lineup: l1, p2Lineup: l2, p3Lineup: l3 }));
   };
 
   // ── Notifications
@@ -917,8 +955,8 @@ function Tournament({ session, onLogout }) {
           <div style={s.card} className="card">
             <h2 style={s.cT}>🎲 Auslosung — {getRoundName(act.length, data.currentRound + 1)}</h2>
             {(() => {
-              const split = playInSplit(act.length);
-              return <p style={s.dI}>{act.length} → {split.matches} {split.isPlayIn ? "Play-in-Duell" : "Duell"}{split.matches === 1 ? "" : "e"}{split.byes > 0 && ` + ${split.byes} Freilos${split.byes === 1 ? "" : "e"}`}{split.isPlayIn && " · danach glatter K.o.-Baum ohne weitere Freilose"}</p>;
+              const split = roundSplit(act.length);
+              return <p style={s.dI}>{act.length} → {split.duels} Duell{split.duels === 1 ? "" : "e"}{split.triple && " + 1 Dreier-Duell (nur Platz 1 kommt weiter)"}</p>;
             })()}
             {(() => {
               const sched = (data.schedule || []).find((x) => x.roundNumber === data.currentRound + 1);
@@ -928,11 +966,12 @@ function Tournament({ session, onLogout }) {
             {cr?.status === "active" ? <p style={s.hint}>Runde läuft noch — erst Punkte eintragen & abschließen.</p>
               : animDraw ? <div>
                 <p style={{ ...s.dI, color: "#00e676", animation: "pulse 1s infinite" }}>Lose werden gezogen...</p>
-                {drawn.map((p) => { const p1 = gp(p.player1Id), p2 = gp(p.player2Id); return (
+                {drawn.map((p) => { const p1 = gp(p.player1Id), p2 = gp(p.player2Id), p3 = p.player3Id ? gp(p.player3Id) : null; return (
                   <div key={p.id} style={{ ...s.drP, animation: "drawReveal .4s ease-out forwards" }}>
                     <Av p={p1} size={20} /><span style={s.drN}>{p1?.name}</span>
                     <span style={s.vsT}>vs</span>
                     <span style={s.drN}>{p2?.name}</span><Av p={p2} size={20} />
+                    {p3 && <><span style={s.vsT}>vs</span><span style={s.drN}>{p3?.name}</span><Av p={p3} size={20} /></>}
                   </div>
                 ); })}
               </div>
@@ -953,7 +992,7 @@ function Tournament({ session, onLogout }) {
               <div style={s.fl}><label style={s.lb}>Deadline (Punkte-Eintrag bis)</label><input type="datetime-local" style={s.inp} value={cr.deadline ? cr.deadline.slice(0, 16) : ""} onChange={(e) => updDeadline(e.target.value ? new Date(e.target.value).toISOString() : null)} /></div>
             )}
             {cr.deadline && <DeadlineBar deadline={cr.deadline} onPing={() => {
-              const missing = cr.pairings.filter((p) => p.score1 == null).map((p) => `${gp(p.player1Id)?.name} vs ${gp(p.player2Id)?.name}`).join(", ");
+              const missing = cr.pairings.filter((p) => p.score1 == null).map((p) => [gp(p.player1Id)?.name, gp(p.player2Id)?.name, gp(p.player3Id)?.name].filter(Boolean).join(" vs ")).join(", ");
               postDiscord("deadline", { cupName: data.cupName, roundName: cr.name, deadline: formatDeadline(cr.deadline), missing });
             }} isAdmin={isAdmin} />}
             {data.config.tiebreakMode === "twoLeg" && <p style={{ ...s.hint, color: "#a855f7" }}>Modus: Hin- & Rückrunde</p>}
@@ -964,25 +1003,32 @@ function Tournament({ session, onLogout }) {
             )}
           </div>
           {cr.pairings.map((p) => {
-            const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-            const d = p.score1 !== null && p.score2 !== null;
+            const p1 = gp(p.player1Id), p2 = gp(p.player2Id), p3 = p.player3Id ? gp(p.player3Id) : null;
+            const isTriple = !!p.player3Id;
+            const d = p.score1 !== null && p.score2 !== null && (!isTriple || p.score3 !== null);
+            const best = d ? Math.max(p.score1, p.score2, isTriple ? p.score3 : -Infinity) : null;
+            const slots = [[p1, p.score1], [p2, p.score2], ...(isTriple ? [[p3, p.score3]] : [])];
             const ed = editSc === p.id;
             const canEdit = canEditScore(p);
             const expanded = expandedMatch === p.id;
             return (
               <div key={p.id} style={s.mC}>
+                {isTriple && <p style={{ fontSize: 10, color: "#a855f7", textAlign: "center", marginBottom: 4, fontWeight: 700, letterSpacing: .5 }}>🎯 DREIER-DUELL — NUR PLATZ 1 KOMMT WEITER</p>}
                 <div style={s.mI}>
-                  <div style={{ ...s.mP, background: d && p.score1 > p.score2 ? "#0a2e1a" : "transparent", borderRadius: 8, padding: "7px 10px" }}>
-                    <span style={s.mN}><Av p={p1} size={20} />{p1?.name}{p1?.isTitleHolder && <span style={s.tdB}>TV</span>}</span>
-                    {p1?.league && <span style={s.mLg}>{p1.league}</span>}
-                    {d && <span style={{ ...s.mS, color: p.score1 > p.score2 ? "#00e676" : p.score1 < p.score2 ? "#ef4444" : "#fbbf24" }}>{p.score1}</span>}
-                  </div>
-                  <div style={s.vsC}>VS</div>
-                  <div style={{ ...s.mP, background: d && p.score2 > p.score1 ? "#0a2e1a" : "transparent", borderRadius: 8, padding: "7px 10px" }}>
-                    <span style={s.mN}><Av p={p2} size={20} />{p2?.name}{p2?.isTitleHolder && <span style={s.tdB}>TV</span>}</span>
-                    {p2?.league && <span style={s.mLg}>{p2.league}</span>}
-                    {d && <span style={{ ...s.mS, color: p.score2 > p.score1 ? "#00e676" : p.score2 < p.score1 ? "#ef4444" : "#fbbf24" }}>{p.score2}</span>}
-                  </div>
+                  {slots.map(([pl, sc], si) => {
+                    const isBest = d && sc === best;
+                    const tieAtTop = d && slots.filter(([, x]) => x === best).length > 1 && isBest;
+                    return (
+                      <Fragment key={si}>
+                        {si > 0 && <div style={s.vsC}>VS</div>}
+                        <div style={{ ...s.mP, background: isBest && !tieAtTop ? "#0a2e1a" : "transparent", borderRadius: 8, padding: "7px 10px" }}>
+                          <span style={s.mN}><Av p={pl} size={20} />{pl?.name}{pl?.isTitleHolder && <span style={s.tdB}>TV</span>}</span>
+                          {pl?.league && <span style={s.mLg}>{pl.league}</span>}
+                          {d && <span style={{ ...s.mS, color: tieAtTop ? "#fbbf24" : isBest ? "#00e676" : "#ef4444" }}>{sc}</span>}
+                        </div>
+                      </Fragment>
+                    );
+                  })}
                 </div>
                 {p.tiebreakMethod && <p style={{ fontSize: 10, color: "#fbbf24", marginTop: 4, textAlign: "center" }}>⚖️ {p.tiebreakMethod}</p>}
 
@@ -994,7 +1040,7 @@ function Tournament({ session, onLogout }) {
 
                 {cr.status !== "completed" && canEdit && (ed ? (
                   <div style={s.sE}>
-                    {data.config.tiebreakMode === "twoLeg" && (
+                    {data.config.tiebreakMode === "twoLeg" && !isTriple && (
                       <div style={s.chipRow}>
                         <span style={{ ...s.chip, ...(scInp.leg === 1 ? s.chipA : {}) }} onClick={() => setScInp({ ...scInp, leg: 1 })}>Hinrunde</span>
                         <span style={{ ...s.chip, ...(scInp.leg === 2 ? s.chipA : {}) }} onClick={() => setScInp({ ...scInp, leg: 2 })}>Rückrunde</span>
@@ -1003,6 +1049,7 @@ function Tournament({ session, onLogout }) {
                     <div style={s.sR}>
                       <div style={{ flex: 1 }}><label style={s.sLb}>{p1?.name}</label><input type="number" step="0.01" style={s.sI} placeholder="Punkte" value={scInp.s1} onChange={(e) => setScInp({ ...scInp, s1: e.target.value })} /></div>
                       <div style={{ flex: 1 }}><label style={s.sLb}>{p2?.name}</label><input type="number" step="0.01" style={s.sI} placeholder="Punkte" value={scInp.s2} onChange={(e) => setScInp({ ...scInp, s2: e.target.value })} /></div>
+                      {isTriple && <div style={{ flex: 1 }}><label style={s.sLb}>{p3?.name}</label><input type="number" step="0.01" style={s.sI} placeholder="Punkte" value={scInp.s3 || ""} onChange={(e) => setScInp({ ...scInp, s3: e.target.value })} /></div>}
                     </div>
                     <div style={s.sA}>
                       <button className="btn" style={s.bS} onClick={() => setEditSc(null)}>Abbrechen</button>
@@ -1012,14 +1059,14 @@ function Tournament({ session, onLogout }) {
                 ) : (
                   <button className="btn" style={s.bEn} onClick={() => {
                     setEditSc(p.id);
-                    const leg = data.config.tiebreakMode === "twoLeg" && p.leg1 ? 2 : 1;
-                    const src = data.config.tiebreakMode === "twoLeg" ? (leg === 2 ? p.leg2 : p.leg1) : p;
-                    setScInp({ s1: src?.score1 != null ? String(src.score1) : "", s2: src?.score2 != null ? String(src.score2) : "", leg });
+                    const leg = data.config.tiebreakMode === "twoLeg" && !isTriple && p.leg1 ? 2 : 1;
+                    const src = data.config.tiebreakMode === "twoLeg" && !isTriple ? (leg === 2 ? p.leg2 : p.leg1) : p;
+                    setScInp({ s1: src?.score1 != null ? String(src.score1) : "", s2: src?.score2 != null ? String(src.score2) : "", s3: p.score3 != null ? String(p.score3) : "", leg });
                   }}>{d ? "✏️ Ändern" : "📝 Punkte eintragen"}</button>
                 ))}
 
                 {cr.status !== "completed" && !canEdit && !isAdmin && (
-                  <p style={{ ...s.hint, fontSize: 10 }}>Nur {p1?.name} oder {p2?.name} können Punkte eintragen.</p>
+                  <p style={{ ...s.hint, fontSize: 10 }}>Nur {slots.map(([pl]) => pl?.name).filter(Boolean).join(", ")} können Punkte eintragen.</p>
                 )}
 
                 <button style={{ ...s.bTx, marginTop: 6, color: "#64748b" }} onClick={() => setExpandedMatch(expanded ? null : p.id)}>
@@ -1067,9 +1114,21 @@ function Tournament({ session, onLogout }) {
               <span style={{ ...s.bdg, background: r.status === "completed" ? "#1b4332" : "#1a2e1a", color: r.status === "completed" ? "#4ade80" : "#00e676" }}>{r.status === "completed" ? "✓" : "●"}</span>
             </div>
             {r.pairings.map((p) => {
-              const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-              const d = p.score1 != null && p.score2 != null;
+              const p1 = gp(p.player1Id), p2 = gp(p.player2Id), p3 = p.player3Id ? gp(p.player3Id) : null;
+              const d = p.score1 != null && p.score2 != null && (!p.player3Id || p.score3 != null);
               const w = p.winner;
+              if (p3) {
+                return (
+                  <div key={p.id} style={s.hP}>
+                    {[[p1, p.player1Id, p.score1], [p2, p.player2Id, p.score2], [p3, p.player3Id, p.score3]].map(([pl, id, sc], i) => (
+                      <span key={i} style={{ ...s.hN, textAlign: i === 0 ? "left" : i === 1 ? "center" : "right", fontWeight: w === id ? 700 : 400, color: w === id ? "#00e676" : "#cbd5e1" }}>
+                        {pl?.name} {d ? `(${sc})` : ""}
+                      </span>
+                    ))}
+                    {p.tiebreakMethod && <span style={{ fontSize: 9, color: "#fbbf24" }}>⚖️</span>}
+                  </div>
+                );
+              }
               return (
                 <div key={p.id} style={s.hP}>
                   <span style={{ ...s.hN, fontWeight: w === p.player1Id ? 700 : 400, color: w === p.player1Id ? "#00e676" : "#cbd5e1" }}>{p1?.name}</span>
@@ -1233,14 +1292,15 @@ function Tournament({ session, onLogout }) {
 
       {lineupModal && <div style={s.ov} onClick={() => setLineupModal(null)}>
         <div style={{ ...s.mo, maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
-          <h3 style={s.moT}>⚔️ {lineupModal.p1?.name} vs {lineupModal.p2?.name}</h3>
+          <h3 style={s.moT}>⚔️ {[lineupModal.p1?.name, lineupModal.p2?.name, lineupModal.p3?.name].filter(Boolean).join(" vs ")}</h3>
           <p style={s.moTx}>{lineupModal.round.name}{lineupModal.md && ` · Spieltag ${lineupModal.md}`}</p>
           {lineupModal.loading && <p style={s.info}>Lade Aufstellungen...</p>}
           {lineupModal.error && <p style={{ ...s.info, color: "#ef4444" }}>{lineupModal.error}</p>}
           {!lineupModal.loading && !lineupModal.error && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: lineupModal.p3 ? "1fr 1fr 1fr" : "1fr 1fr", gap: 10 }}>
               <LineupColumn p={lineupModal.p1} r={lineupModal.p1Lineup} headScore={lineupModal.pairing.score1} />
               <LineupColumn p={lineupModal.p2} r={lineupModal.p2Lineup} headScore={lineupModal.pairing.score2} />
+              {lineupModal.p3 && <LineupColumn p={lineupModal.p3} r={lineupModal.p3Lineup} headScore={lineupModal.pairing.score3} />}
             </div>
           )}
           <div style={{ ...s.moA, marginTop: 12 }}>
@@ -1259,6 +1319,10 @@ function Tournament({ session, onLogout }) {
                 <span style={{ ...s.hN, color: r.s1 != null ? "#e2e8f0" : "#ef4444" }}>{r.p1Name} {r.s1 != null ? `→ ${r.s1}` : "✗"}</span>
                 <span style={s.hS}>vs</span>
                 <span style={{ ...s.hN, textAlign: "right", color: r.s2 != null ? "#e2e8f0" : "#ef4444" }}>{r.p2Name} {r.s2 != null ? `→ ${r.s2}` : "✗"}</span>
+                {r.p3Name != null && r.s3 !== undefined && <>
+                  <span style={s.hS}>vs</span>
+                  <span style={{ ...s.hN, textAlign: "right", color: r.s3 != null ? "#e2e8f0" : "#ef4444" }}>{r.p3Name} {r.s3 != null ? `→ ${r.s3}` : "✗"}</span>
+                </>}
               </div>
             ))}
           </div>
