@@ -55,19 +55,17 @@ const lineOf = (ch, n = 28) => ch.repeat(n);
 // ── Bracket-View im Monospace-Codeblock
 function renderMatchesBlock(matches) {
   // Breite so wählen, dass der längste Name passt (+ Puffer)
-  const maxName = Math.max(8, ...matches.flatMap((m) => [m.p1, m.p2].filter(Boolean).map((n) => n.length)));
+  const maxName = Math.max(8, ...matches.flatMap((m) => [m.p1, m.p2, m.p3].filter(Boolean).map((n) => n.length)));
   const w = Math.min(18, maxName);
   const lines = [];
   matches.forEach((m, i) => {
-    const has = m.s1 != null && m.s2 != null;
-    const w1 = m.winner ? m.winner === m.p1 : has && m.s1 > m.s2;
-    const w2 = m.winner ? m.winner === m.p2 : has && m.s2 > m.s1;
-    const mk1 = w1 ? "✓" : w2 ? "✗" : "·";
-    const mk2 = w2 ? "✓" : w1 ? "✗" : "·";
-    const s1 = has ? padL(m.s1, 4) : "  -";
-    const s2 = has ? padL(m.s2, 4) : "  -";
-    lines.push(`${mk1} ${pad(m.p1, w)} ${s1}`);
-    lines.push(`${mk2} ${pad(m.p2, w)} ${s2}`);
+    const rows = [[m.p1, m.s1], [m.p2, m.s2], ...(m.p3 != null ? [[m.p3, m.s3]] : [])];
+    const has = rows.every(([, sc]) => sc != null);
+    for (const [name, sc] of rows) {
+      const win = m.winner ? m.winner === name : false;
+      const mk = win ? "✓" : m.winner ? "✗" : "·";
+      lines.push(`${mk} ${pad(name, w)} ${has ? padL(sc, 4) : "  -"}`);
+    }
     if (m.tiebreak) lines.push(`  ⚖️  ${m.tiebreak}`);
     if (i < matches.length - 1) lines.push(lineOf("─", w + 7));
   });
@@ -90,7 +88,9 @@ const ligaTag = (name) => (name ? ` \`${shortLiga(name)}\`` : "");
 // festen Spaltenbreiten, dadurch keine kaputten Umbrüche auf Mobile.
 function renderDrawLines(pairings) {
   return pairings
-    .map((p) => `⚔️ **${p.p1}**${ligaTag(p.p1Liga)}  vs  **${p.p2}**${ligaTag(p.p2Liga)}`)
+    .map((p) => p.p3
+      ? `🎯 **${p.p1}**${ligaTag(p.p1Liga)}  vs  **${p.p2}**${ligaTag(p.p2Liga)}  vs  **${p.p3}**${ligaTag(p.p3Liga)} — _Dreier-Duell, nur Platz 1 kommt weiter!_`
+      : `⚔️ **${p.p1}**${ligaTag(p.p1Liga)}  vs  **${p.p2}**${ligaTag(p.p2Liga)}`)
     .join("\n");
 }
 
@@ -118,6 +118,19 @@ function buildEmbed(event, p) {
   if (event === "result") {
     const prog = p.progress ? ` · ${p.progress.done}/${p.progress.total} Duelle gespielt` : "";
     const tiebreak = p.tiebreak ? `\n⚖️ _Entschieden durch: ${p.tiebreak}_` : "";
+    if (p.p3 != null) {
+      // Dreier-Duell: drei Teilnehmer, nur Platz 1 kommt weiter
+      const rows = [[p.p1, p.s1, p.p1Liga], [p.p2, p.s2, p.p2Liga], [p.p3, p.s3, p.p3Liga]]
+        .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+        .map(([n, sc, lg], i) => `${["🥇", "🥈", "🥉"][i]} **${n}**${ligaTag(lg)} — **${sc}**`);
+      return {
+        title: `🎯 Dreier-Duell — ${p.roundName}`,
+        url: appUrl,
+        description: `📅 **${p.roundName}${md ? ` · ${md}` : ""}**${prog}\n\n${rows.join("\n")}\n\n🏆 **Weiter: ${p.winner}**${tiebreak}`,
+        color, timestamp: ts,
+        footer: { text: cup },
+      };
+    }
     const ligaP1 = ligaTag(p.p1Liga);
     const ligaP2 = ligaTag(p.p2Liga);
     return {

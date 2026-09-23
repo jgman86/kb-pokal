@@ -36,9 +36,10 @@ export function Bracket({ data, gp, onMatchClick }) {
     rounds.forEach((r, ci) => {
       const n = r.pairings.length || 1;
       const spacing = (canvasH - 20) / n;
-      const arr = r.pairings.map((_, i) => {
-        const y = 10 + i * spacing + (spacing - SLOT_H) / 2;
-        return { x: ci * (COL_W + COL_GAP), y, h: SLOT_H };
+      const arr = r.pairings.map((p, i) => {
+        const h = p.player3Id ? Math.round(SLOT_H * 1.5) : SLOT_H; // Dreier-Duell: drei Zeilen
+        const y = 10 + i * spacing + (spacing - h) / 2;
+        return { x: ci * (COL_W + COL_GAP), y, h };
       });
       positions.push(arr);
     });
@@ -140,21 +141,27 @@ export function Bracket({ data, gp, onMatchClick }) {
               const poss = layout.positions[ri];
               return r.pairings.map((p, i) => {
                 const pos = poss[i];
-                const p1 = gp(p.player1Id), p2 = gp(p.player2Id);
-                const d = p.score1 !== null && p.score2 !== null;
-                const w1 = p.winner === p.player1Id || (d && !p.winner && p.score1 > p.score2);
-                const w2 = p.winner === p.player2Id || (d && !p.winner && p.score2 > p.score1);
-                const t = d && !p.winner && p.score1 === p.score2;
+                const entries = [
+                  [gp(p.player1Id), p.score1, p.player1Id],
+                  [gp(p.player2Id), p.score2, p.player2Id],
+                  ...(p.player3Id ? [[gp(p.player3Id), p.score3, p.player3Id]] : []),
+                ];
+                const d = entries.every(([, sc]) => sc !== null && sc !== undefined);
+                const best = d ? Math.max(...entries.map(([, sc]) => sc)) : null;
+                const topCount = d ? entries.filter(([, sc]) => sc === best).length : 0;
                 const clickable = d && onMatchClick;
                 return (
                   <div key={p.id} style={{ position: "absolute", left: pos.x, top: pos.y, width: COL_W, height: pos.h }}>
                     <div
                       onClick={clickable ? (e) => { e.stopPropagation(); onMatchClick(p, r); } : undefined}
-                      style={{ ...bk.mb, borderColor: r.status === "active" ? "#00e67633" : "#1e293b", cursor: clickable ? "pointer" : "default" }}
+                      style={{ ...bk.mb, borderColor: p.player3Id ? "#a855f766" : r.status === "active" ? "#00e67633" : "#1e293b", cursor: clickable ? "pointer" : "default" }}
                       title={clickable ? "Aufstellungen anzeigen" : ""}
                     >
-                      <Slot p={p1} win={w1} lose={d && !w1 && !t} tie={t} score={d ? p.score1 : null} />
-                      <Slot p={p2} win={w2} lose={d && !w2 && !t} tie={t} score={d ? p.score2 : null} />
+                      {entries.map(([pl, sc, id], si) => {
+                        const win = p.winner ? p.winner === id : d && sc === best && topCount === 1;
+                        const tie = d && !p.winner && sc === best && topCount > 1;
+                        return <Slot key={si} p={pl} win={win} lose={d && !win && !tie} tie={tie} score={d ? sc : null} />;
+                      })}
                     </div>
                   </div>
                 );

@@ -138,45 +138,68 @@ export function resolveTiebreak(pairing, p1, p2, mode) {
 }
 
 // ============================================
-// Auslosung — Play-in-Regel (DFB-Pokal-Prinzip)
+// Auslosung — Dreier-Duell-Regel bei ungerader Teilnehmerzahl
 // ============================================
-// Ist die Teilnehmerzahl keine Zweierpotenz, spielen nur so viele Duelle,
-// dass danach eine Zweierpotenz übrig bleibt — alle anderen haben einmalig
-// frei. Ab dann halbiert sich das Feld sauber ohne weitere Freilose.
-// Beispiel 17: 1 Play-in-Duell + 15 Freilose → 16 → 8 → 4 → 2 → 1.
-// Bei Zweierpotenzen (16, 8, ...) ist es eine normale volle Runde.
-export function playInSplit(n) {
-  const pow = 2 ** Math.floor(Math.log2(Math.max(2, n)));
-  const excess = n - pow;
-  const matches = excess > 0 ? excess : n / 2;
-  return { matches, byes: n - 2 * matches, isPlayIn: excess > 0 };
+// Sonderfall statt Freilos: Bei ungerader Zahl spielen (n-3)/2 normale
+// Duelle plus EIN Dreier-Duell, aus dem nur der Punktbeste weiterkommt.
+// Beispiel 17: 7 Duelle + 1 Dreier-Duell → 8 übrig. Niemand hat frei.
+// Bei gerader Zahl ganz normale volle Runde (n/2 Duelle).
+export function roundSplit(n) {
+  const triple = n % 2 === 1 && n >= 3;
+  return { duels: triple ? (n - 3) / 2 : Math.floor(n / 2), triple };
 }
 
-const mkPairing = (p1, p2) => ({ id: generateId(), player1Id: p1.id, player2Id: p2.id, score1: null, score2: null, winner: null, tiebreakMethod: null, comments: [], predictions: [], leg1: null, leg2: null });
+const mkPairing = (p1, p2, p3 = null) => ({
+  id: generateId(), player1Id: p1.id, player2Id: p2.id,
+  player3Id: p3 ? p3.id : null,
+  score1: null, score2: null, score3: null,
+  winner: null, tiebreakMethod: null, comments: [], predictions: [], leg1: null, leg2: null,
+});
 
-// Setzliste: die niedrigsten Seeds müssen ins Play-in, die Top-Seeds haben
-// frei. In vollen Runden wie gehabt 1 vs n, 2 vs n-1, ...
+// Setzliste: die niedrigsten drei Seeds müssen ins Dreier-Duell,
+// der Rest spielt 1 vs n, 2 vs n-1, ...
 export function seededPairings(players) {
   const sorted = [...players].sort((a, b) => (b.seed || 0) - (a.seed || 0));
-  const { matches } = playInSplit(sorted.length);
-  const byes = sorted.slice(0, sorted.length - 2 * matches).map((p) => p.id);
-  const pool = sorted.slice(sorted.length - 2 * matches);
+  const { triple } = roundSplit(sorted.length);
+  const pool = triple ? sorted.slice(0, sorted.length - 3) : sorted;
   const pairings = [];
-  for (let i = 0; i < matches; i++) {
+  for (let i = 0; i < pool.length / 2; i++) {
     pairings.push(mkPairing(pool[i], pool[pool.length - 1 - i]));
   }
-  return { pairings, byes };
+  if (triple) {
+    const t = sorted.slice(sorted.length - 3);
+    pairings.push(mkPairing(t[0], t[1], t[2]));
+  }
+  return { pairings, byes: [] };
 }
 
 export function randomPairings(players) {
   const sh = shuffle(players);
-  const { matches } = playInSplit(sh.length);
+  const { duels, triple } = roundSplit(sh.length);
   const pairings = [];
-  for (let i = 0; i < matches * 2; i += 2) {
+  for (let i = 0; i < duels * 2; i += 2) {
     pairings.push(mkPairing(sh[i], sh[i + 1]));
   }
-  const byes = sh.slice(matches * 2).map((p) => p.id);
-  return { pairings, byes };
+  if (triple) {
+    pairings.push(mkPairing(sh[duels * 2], sh[duels * 2 + 1], sh[duels * 2 + 2]));
+  }
+  return { pairings, byes: [] };
+}
+
+// Sieger eines Dreier-Duells: Punktbester. Bei Gleichstand an der Spitze
+// entscheidet der höhere Marktwert, sonst der Münzwurf (der twoLeg-Modus
+// wird für Dreier-Duelle nicht unterstützt).
+export function resolveTripleWinner(pairing, p1, p2, p3) {
+  const entries = [
+    { id: pairing.player1Id, s: pairing.score1, mv: p1?.marketValue || 0 },
+    { id: pairing.player2Id, s: pairing.score2, mv: p2?.marketValue || 0 },
+    { id: pairing.player3Id, s: pairing.score3, mv: p3?.marketValue || 0 },
+  ].sort((a, b) => b.s - a.s);
+  const tied = entries.filter((e) => e.s === entries[0].s);
+  if (tied.length === 1) return { winner: entries[0].id, method: null };
+  const byMv = [...tied].sort((a, b) => b.mv - a.mv);
+  if (byMv[0].mv > byMv[1].mv) return { winner: byMv[0].id, method: "Dreier-Gleichstand → höherer Marktwert" };
+  return { winner: tied[Math.floor(Math.random() * tied.length)].id, method: "Dreier-Gleichstand → Münzwurf" };
 }
 
 // ============================================
@@ -193,17 +216,21 @@ export function computeStats(data) {
   for (const r of rounds) {
     for (const m of r.pairings || []) {
       if (m.score1 == null || m.score2 == null) continue;
+      if (m.player3Id && m.score3 == null) continue;
       matchCount++;
-      [[m.player1Id, m.score1, m.score2, m.player2Id], [m.player2Id, m.score2, m.score1, m.player1Id]].forEach(([pid, s, opp]) => {
+      const parts = [[m.player1Id, m.score1], [m.player2Id, m.score2], ...(m.player3Id ? [[m.player3Id, m.score3]] : [])];
+      parts.forEach(([pid, s]) => {
         totals[pid] = (totals[pid] || 0) + s;
         counts[pid] = (counts[pid] || 0) + 1;
         if (s > topRoundScore.value) topRoundScore = { value: s, playerId: pid, roundNumber: r.roundNumber, matchday: r.matchday };
       });
-      const diff = Math.abs(m.score1 - m.score2);
-      if (diff > biggestWin.diff) {
-        const winId = m.score1 > m.score2 ? m.player1Id : m.player2Id;
-        const loseId = m.score1 > m.score2 ? m.player2Id : m.player1Id;
-        biggestWin = { diff, winnerId: winId, loserId: loseId, s1: Math.max(m.score1, m.score2), s2: Math.min(m.score1, m.score2), roundNumber: r.roundNumber };
+      if (!m.player3Id) { // biggestWin nur für klassische Duelle
+        const diff = Math.abs(m.score1 - m.score2);
+        if (diff > biggestWin.diff) {
+          const winId = m.score1 > m.score2 ? m.player1Id : m.player2Id;
+          const loseId = m.score1 > m.score2 ? m.player2Id : m.player1Id;
+          biggestWin = { diff, winnerId: winId, loserId: loseId, s1: Math.max(m.score1, m.score2), s2: Math.min(m.score1, m.score2), roundNumber: r.roundNumber };
+        }
       }
     }
   }
